@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -194,6 +195,7 @@ func GetClusterProxyValueFunc(
 		if err != nil {
 			return nil, err
 		}
+
 		return map[string]interface{}{
 			"agentDeploymentName":      "cluster-proxy-proxy-agent",
 			"serviceDomain":            "svc.cluster.local",
@@ -216,6 +218,7 @@ func GetClusterProxyValueFunc(
 			"includeStaticProxyAgentSecret": !v1CSRSupported,
 			"staticProxyAgentSecretCert":    certDataBase64,
 			"staticProxyAgentSecretKey":     keyDataBase64,
+			"otherServiceURLs":              getAgentIndendifiersBasedonServiceURLs(cluster.Name, proxyConfig.Status.ServiceURLs),
 		}, nil
 	}
 }
@@ -229,9 +232,21 @@ func CustomSignerWithExpiry(customSignerName string, caKey, caData []byte, durat
 	}
 }
 
+// TODO add unit-test for this function
+func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceURLs []proxyv1alpha1.ServiceURL) string {
+	var aids []string
+
+	for _, su := range serviceURLs {
+		if su.ManagedCluster == clusterName {
+			aids = append(aids, fmt.Sprintf("host=%s", su.URL))
+		}
+	}
+
+	return strings.Join(aids, "&")
+}
+
 const (
 	ApiserverNetworkProxyLabelAddon = "open-cluster-management.io/addon"
-
-	AgentSecretName   = "cluster-proxy-open-cluster-management.io-proxy-agent-signer-client-cert"
-	AgentCASecretName = "cluster-proxy-ca"
+	AgentSecretName                 = "cluster-proxy-open-cluster-management.io-proxy-agent-signer-client-cert"
+	AgentCASecretName               = "cluster-proxy-ca"
 )

@@ -41,6 +41,34 @@ type ManagedProxyConfigurationSpec struct {
 	// `deploy` is where we override miscellaneous details for deploying either
 	// proxy servers or agents.
 	Deploy *ManagedProxyConfigurationDeploy `json:"deploy,omitempty"`
+
+	// +optional
+	ServiceResolvers []ServiceResolver `json:"serviceResolvers,omitempty"`
+}
+
+type ServiceResolver struct {
+	// +required
+	ManagedCluster string `json:"managedCluster"`
+
+	// +required
+	Namespace string `json:"namespace"`
+
+	// +required
+	ServiceName string `json:"serviceName"`
+}
+
+type ServiceURL struct {
+	// +required
+	ManagedCluster string `json:"managedCluster"`
+
+	// +required
+	Namespace string `json:"namespace"`
+
+	// +required
+	ServiceName string `json:"serviceName"`
+
+	// +required
+	URL string `json:"url"`
 }
 
 // ManagedProxyConfigurationStatus defines the observed state of ManagedProxyConfiguration
@@ -49,6 +77,8 @@ type ManagedProxyConfigurationStatus struct {
 	LastObservedGeneration int64 `json:"lastObservedGeneration,omitempty"`
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// +optional
+	ServiceURLs []ServiceURL `json:"serviceURLs,omitempty"`
 }
 
 //+kubebuilder:object:root=true

@@ -16,6 +16,7 @@ import (
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/authentication/selfsigned"
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/eventhandler"
 
+	"github.com/google/uuid"
 	"github.com/openshift/library-go/pkg/crypto"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/pkg/errors"
@@ -188,6 +189,11 @@ func (c *ClusterManagementAddonReconciler) Reconcile(ctx context.Context, reques
 	if err := c.refreshStatus(isModified, config); err != nil {
 		return reconcile.Result{}, err
 	}
+
+	// refreshing service urls
+	if err := c.refreshServiceURLs(ctx, config); err != nil {
+		return reconcile.Result{}, err
+	}
 	return reconcile.Result{}, nil
 }
 
@@ -212,6 +218,42 @@ func (c *ClusterManagementAddonReconciler) refreshStatus(isModified bool, config
 		meta.SetStatusCondition(&editingConfig.Status.Conditions, expectingCondition)
 	}
 	return c.Client.Status().Update(context.TODO(), editingConfig)
+}
+
+func (c *ClusterManagementAddonReconciler) refreshServiceURLs(ctx context.Context, config *proxyv1alpha1.ManagedProxyConfiguration) error {
+	newServiceURLs := generateNewServiceURLs(config.Spec.ServiceResolvers, config.Status.ServiceURLs)
+	editingConfig := config.DeepCopy()
+	editingConfig.Status.ServiceURLs = newServiceURLs
+	return c.Client.Status().Update(context.TODO(), editingConfig)
+}
+
+// TODO add test cases later
+func generateNewServiceURLs(serviceResolvers []proxyv1alpha1.ServiceResolver, oldServiceURLs []proxyv1alpha1.ServiceURL) []proxyv1alpha1.ServiceURL {
+	newServiceURLs := []proxyv1alpha1.ServiceURL{}
+
+	for _, sr := range serviceResolvers {
+		var exist bool
+		newsu := proxyv1alpha1.ServiceURL{
+			ManagedCluster: sr.ManagedCluster,
+			Namespace:      sr.Namespace,
+			ServiceName:    sr.ServiceName,
+		}
+		for _, su := range oldServiceURLs {
+			if su.ManagedCluster == sr.ManagedCluster && su.Namespace == sr.Namespace && su.ServiceName == sr.ServiceName {
+				// if all conditions matches, no need to generate new URL
+				newsu.URL = su.URL
+				exist = true
+				break
+			}
+		}
+		if !exist {
+			// if it's a new service, generate new URL
+			newsu.URL = fmt.Sprintf("%s-%s-%s-%s", sr.ManagedCluster, sr.Namespace, sr.ServiceName, uuid.New().String())
+		}
+		newServiceURLs = append(newServiceURLs, newsu)
+	}
+
+	return newServiceURLs
 }
 
 func (c *ClusterManagementAddonReconciler) deployProxyServer(config *proxyv1alpha1.ManagedProxyConfiguration) (bool, error) {
