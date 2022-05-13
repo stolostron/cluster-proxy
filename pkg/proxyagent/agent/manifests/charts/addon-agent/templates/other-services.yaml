@@ -1,0 +1,11 @@
+{{- range .Values.otherServices }}
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ .url }}
+spec:
+  type: ExternalName
+  externalName: {{ .serviceName }}.{{ .namespace }}.svc.cluster.local
+---
+{{- end }}

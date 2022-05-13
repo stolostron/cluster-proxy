@@ -218,7 +218,9 @@ func GetClusterProxyValueFunc(
 			"includeStaticProxyAgentSecret": !v1CSRSupported,
 			"staticProxyAgentSecretCert":    certDataBase64,
 			"staticProxyAgentSecretKey":     keyDataBase64,
-			"otherServiceURLs":              getAgentIndendifiersBasedonServiceURLs(cluster.Name, proxyConfig.Status.ServiceURLs),
+			// support to access not only but also other other services on managed cluster
+			"agentIdentifiers": getAgentIndendifiersBasedonServiceURLs(cluster.Name, proxyConfig.Status.ServiceURLs), // form agentIdentifiers
+			"otherServices":    getOtherServices(proxyConfig.Status.ServiceURLs),
 		}, nil
 	}
 }
@@ -232,9 +234,13 @@ func CustomSignerWithExpiry(customSignerName string, caKey, caData []byte, durat
 	}
 }
 
-// TODO add unit-test for this function
+// TODO add unit-test
 func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceURLs []proxyv1alpha1.ServiceURL) string {
 	var aids []string
+
+	aids = append(aids, fmt.Sprintf("host=%s", clusterName))
+	aids = append(aids, fmt.Sprintf("host=%s.%s", clusterName, config.AddonInstallNamespace))
+	aids = append(aids, fmt.Sprintf("host=%s.%s.%s", clusterName, config.AddonInstallNamespace, "svc.cluster.local"))
 
 	for _, su := range serviceURLs {
 		if su.ManagedCluster == clusterName {
@@ -243,6 +249,19 @@ func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceURLs []pr
 	}
 
 	return strings.Join(aids, "&")
+}
+
+// TODO add unit-test
+func getOtherServices(serviceURLs []proxyv1alpha1.ServiceURL) []map[string]string {
+	otherServices := make([]map[string]string, 0)
+	for _, su := range serviceURLs {
+		otherServices = append(otherServices, map[string]string{
+			"url":         su.URL,
+			"serviceName": su.ServiceName,
+			"namespace":   su.Namespace,
+		})
+	}
+	return otherServices
 }
 
 const (
