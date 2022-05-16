@@ -196,6 +196,12 @@ func GetClusterProxyValueFunc(
 			return nil, err
 		}
 
+		// get agentIndentifiers
+		agentIdentifiers, err := getAgentIndendifiersBasedonServiceURLs(cluster.Name, proxyConfig.Spec.ServiceResolvers, proxyConfig.Status.ServiceURLs)
+		if err != nil {
+			return nil, err
+		}
+
 		return map[string]interface{}{
 			"agentDeploymentName":      "cluster-proxy-proxy-agent",
 			"serviceDomain":            "svc.cluster.local",
@@ -219,7 +225,7 @@ func GetClusterProxyValueFunc(
 			"staticProxyAgentSecretCert":    certDataBase64,
 			"staticProxyAgentSecretKey":     keyDataBase64,
 			// support to access not only but also other other services on managed cluster
-			"agentIdentifiers": getAgentIndendifiersBasedonServiceURLs(cluster.Name, proxyConfig.Status.ServiceURLs), // form agentIdentifiers
+			"agentIdentifiers": agentIdentifiers, // form agentIdentifiers
 			"otherServices":    getOtherServices(proxyConfig.Status.ServiceURLs),
 		}, nil
 	}
@@ -235,7 +241,7 @@ func CustomSignerWithExpiry(customSignerName string, caKey, caData []byte, durat
 }
 
 // TODO add unit-test
-func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceURLs []proxyv1alpha1.ServiceURL) string {
+func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceResolvers []proxyv1alpha1.ServiceResolver, serviceURLs []proxyv1alpha1.ServiceURL) (string, error) {
 	var aids []string
 
 	aids = append(aids, fmt.Sprintf("host=%s", clusterName))
@@ -248,7 +254,25 @@ func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceURLs []pr
 		}
 	}
 
-	return strings.Join(aids, "&")
+	for _, sr := range serviceResolvers {
+		if sr.ManagedCluster != clusterName {
+			continue
+		}
+		var suGenerated bool
+		for _, su := range serviceURLs {
+			// if su equals to sr, append it to aids
+			if su.ManagedCluster == sr.ManagedCluster && su.Namespace == sr.Namespace && su.ServiceName == sr.ServiceName {
+				aids = append(aids, fmt.Sprintf("host=%s", su.URL))
+				suGenerated = true
+			}
+		}
+		// if no su generated for sr yet, return err
+		if !suGenerated {
+			return "", fmt.Errorf("no serviceURL generated for serviceResolver %v yet", sr)
+		}
+	}
+
+	return strings.Join(aids, "&"), nil
 }
 
 // TODO add unit-test
