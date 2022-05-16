@@ -271,7 +271,7 @@ func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceResolvers
 
 // TODO add unit-test
 func getOtherServices(serviceURLs []proxyv1alpha1.ServiceURL) []map[string]string {
-	otherServices := make([]map[string]string, 0)
+	otherServices := []map[string]string{}
 	for _, su := range serviceURLs {
 		otherServices = append(otherServices, map[string]string{
 			"url":         su.URL,
