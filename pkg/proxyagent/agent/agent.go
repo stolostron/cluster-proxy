@@ -248,12 +248,6 @@ func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceResolvers
 	aids = append(aids, fmt.Sprintf("host=%s.%s", clusterName, config.AddonInstallNamespace))
 	aids = append(aids, fmt.Sprintf("host=%s.%s.%s", clusterName, config.AddonInstallNamespace, "svc.cluster.local"))
 
-	for _, su := range serviceURLs {
-		if su.ManagedCluster == clusterName {
-			aids = append(aids, fmt.Sprintf("host=%s", su.URL))
-		}
-	}
-
 	for _, sr := range serviceResolvers {
 		if sr.ManagedCluster != clusterName {
 			continue
