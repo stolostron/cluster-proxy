@@ -16,7 +16,6 @@ import (
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/authentication/selfsigned"
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/eventhandler"
 
-	"github.com/google/uuid"
 	"github.com/openshift/library-go/pkg/crypto"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/pkg/errors"
@@ -28,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/validation"
 	informercorev1 "k8s.io/client-go/informers/core/v1"
@@ -248,7 +248,8 @@ func generateNewServiceURLs(serviceResolvers []proxyv1alpha1.ServiceResolver, ol
 		}
 		if !exist {
 			// if it's a new service, generate new URL
-			newsu.URL = fmt.Sprintf("%s-%s-%s-%s", sr.ManagedCluster, sr.Namespace, sr.ServiceName, uuid.New().String())
+			// TODO the name of the service should be shorter than 63 characters
+			newsu.URL = fmt.Sprintf("%s-%s-%s-%s", sr.ManagedCluster, sr.Namespace, sr.ServiceName, rand.String(5))
 		}
 		newServiceURLs = append(newServiceURLs, newsu)
 	}
