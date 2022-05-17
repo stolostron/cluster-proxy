@@ -197,7 +197,7 @@ func GetClusterProxyValueFunc(
 		}
 
 		// get agentIndentifiers
-		agentIdentifiers, err := getAgentIndendifiersBasedonServiceURLs(cluster.Name, proxyConfig.Spec.ServiceResolvers, proxyConfig.Status.ServiceURLs)
+		agentIdentifiers, otherServices, err := getAgentIndendifiersAndOtherServices(cluster.Name, proxyConfig.Spec.ServiceResolvers, proxyConfig.Status.ServiceURLs)
 		if err != nil {
 			return nil, err
 		}
@@ -225,8 +225,8 @@ func GetClusterProxyValueFunc(
 			"staticProxyAgentSecretCert":    certDataBase64,
 			"staticProxyAgentSecretKey":     keyDataBase64,
 			// support to access not only but also other other services on managed cluster
-			"agentIdentifiers": agentIdentifiers, // form agentIdentifiers
-			"otherServices":    getOtherServices(proxyConfig.Status.ServiceURLs),
+			"agentIdentifiers": agentIdentifiers,
+			"otherServices":    otherServices,
 		}, nil
 	}
 }
@@ -240,9 +240,10 @@ func CustomSignerWithExpiry(customSignerName string, caKey, caData []byte, durat
 	}
 }
 
-// TODO add unit-test
-func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceResolvers []proxyv1alpha1.ServiceResolver, serviceURLs []proxyv1alpha1.ServiceURL) (string, error) {
+// TODO add unit-test & split into two functions
+func getAgentIndendifiersAndOtherServices(clusterName string, serviceResolvers []proxyv1alpha1.ServiceResolver, serviceURLs []proxyv1alpha1.ServiceURL) (string, []map[string]string, error) {
 	var aids []string
+	var otherServices []map[string]string
 
 	aids = append(aids, fmt.Sprintf("host=%s", clusterName))
 	aids = append(aids, fmt.Sprintf("host=%s.%s", clusterName, config.AddonInstallNamespace))
@@ -257,29 +258,21 @@ func getAgentIndendifiersBasedonServiceURLs(clusterName string, serviceResolvers
 			// if su equals to sr, append it to aids
 			if su.ManagedCluster == sr.ManagedCluster && su.Namespace == sr.Namespace && su.ServiceName == sr.ServiceName {
 				aids = append(aids, fmt.Sprintf("host=%s", su.URL))
+				otherServices = append(otherServices, map[string]string{
+					"url":         su.URL,
+					"serviceName": su.ServiceName,
+					"namespace":   su.Namespace,
+				})
 				suGenerated = true
 			}
 		}
 		// if no su generated for sr yet, return err
 		if !suGenerated {
-			return "", fmt.Errorf("no serviceURL generated for serviceResolver %v yet", sr)
+			return "", nil, fmt.Errorf("no serviceURL generated for serviceResolver %v yet", sr)
 		}
 	}
 
-	return strings.Join(aids, "&"), nil
-}
-
-// TODO add unit-test
-func getOtherServices(serviceURLs []proxyv1alpha1.ServiceURL) []map[string]string {
-	otherServices := []map[string]string{}
-	for _, su := range serviceURLs {
-		otherServices = append(otherServices, map[string]string{
-			"url":         su.URL,
-			"serviceName": su.ServiceName,
-			"namespace":   su.Namespace,
-		})
-	}
-	return otherServices
+	return strings.Join(aids, "&"), otherServices, nil
 }
 
 const (

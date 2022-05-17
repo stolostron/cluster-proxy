@@ -5,10 +5,12 @@ import (
 	"fmt"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
 	"open-cluster-management.io/cluster-proxy/pkg/generated/clientset/versioned"
 )
 
-func GetServiceURL(ctx context.Context, managedproxyconfigurateionClient *versioned.Clientset, clusterName string, namespace string, serviceName string) (string, error) {
+func GetServiceURL(ctx context.Context, kubeconfig *rest.Config, clusterName string, namespace string, serviceName string) (string, error) {
+	managedproxyconfigurateionClient := versioned.NewForConfigOrDie(kubeconfig)
 	config, err := managedproxyconfigurateionClient.ProxyV1alpha1().ManagedProxyConfigurations().Get(ctx, "cluster-proxy", v1.GetOptions{})
 	if err != nil {
 		return "", err

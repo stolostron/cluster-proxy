@@ -12,13 +12,19 @@ import (
 	"google.golang.org/grpc"
 	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+	"k8s.io/client-go/tools/clientcmd"
+	"open-cluster-management.io/cluster-proxy/client"
 
 	konnectivity "sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client"
 	"sigs.k8s.io/apiserver-network-proxy/pkg/util"
 )
 
 var targetServiceURl string
-var targetServicePort string
+
+var kubeconfig string
+var managedcluster string
+var namespace string
+var serviceName string
 
 var proxyServerHost string
 var proxyServerPort string
@@ -34,10 +40,16 @@ var proxyKeyPath string
 
 var DefaultDialer = &net.Dialer{Timeout: 2 * time.Second, KeepAlive: 2 * time.Second}
 
-//go run examples/access-other-services/main.go --service-url=local-cluster-default-busybox-p2845 --host=localhost --port=8090 --ca-cert=./temp/ca.crt  --cert=./temp/tls.crt --key=./temp/tls.key
+// go run examples/access-other-services/main.go --kubeconfig=/Users/xuezhao/configs/kubeconfigs/cluster-proxy.kubeconfig --managed-cluster=local-cluster --namespace=default --service-name=busybox --host=localhost --port=8090 --ca-cert=./temp/ca.crt  --cert=./temp/tls.crt --key=./temp/tls.key
+
+// go run examples/access-other-services/main.go --kubeconfig=/Users/xuezhao/configs/kubeconfigs/cluster-proxy.kubeconfig --managed-cluster=cluster-kind --namespace=custom --service-name=busybox-kind --host=localhost --port=8090 --ca-cert=./temp/ca.crt  --cert=./temp/tls.crt --key=./temp/tls.key
 
 func main() {
-	flag.StringVar(&targetServiceURl, "service-url", "", "the url of the target service")
+	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
+	flag.StringVar(&managedcluster, "managed-cluster", "", "the name of the managed cluster")
+	flag.StringVar(&namespace, "namespace", "", "the namespace of the target service")
+	flag.StringVar(&serviceName, "service-name", "", "the name of the target service")
+
 	flag.StringVar(&proxyServerHost, "host", "", "proxy server host")
 	flag.StringVar(&proxyServerPort, "port", "", "proxy server port")
 	flag.StringVar(&proxyCACertPath, "ca-cert", "", "the path to ca cert")
@@ -57,6 +69,15 @@ func main() {
 			Time: time.Second * 5,
 		}),
 	)
+	if err != nil {
+		panic(err)
+	}
+
+	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	if err != nil {
+		panic(err)
+	}
+	targetServiceURl, err := client.GetServiceURL(context.Background(), cfg, managedcluster, namespace, serviceName)
 	if err != nil {
 		panic(err)
 	}
