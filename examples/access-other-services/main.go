@@ -19,8 +19,6 @@ import (
 	"sigs.k8s.io/apiserver-network-proxy/pkg/util"
 )
 
-var targetServiceURl string
-
 var kubeconfig string
 var managedcluster string
 var namespace string
@@ -40,9 +38,6 @@ var proxyKeyPath string
 
 var DefaultDialer = &net.Dialer{Timeout: 2 * time.Second, KeepAlive: 2 * time.Second}
 
-// go run examples/access-other-services/main.go --kubeconfig=/Users/xuezhao/configs/kubeconfigs/cluster-proxy.kubeconfig --managed-cluster=local-cluster --namespace=default --service-name=busybox --host=localhost --port=8090 --ca-cert=./temp/ca.crt  --cert=./temp/tls.crt --key=./temp/tls.key
-
-// go run examples/access-other-services/main.go --kubeconfig=/Users/xuezhao/configs/kubeconfigs/cluster-proxy.kubeconfig --managed-cluster=cluster-kind --namespace=custom --service-name=busybox-kind --host=localhost --port=8090 --ca-cert=./temp/ca.crt  --cert=./temp/tls.crt --key=./temp/tls.key
 
 func main() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
@@ -57,6 +52,7 @@ func main() {
 	flag.StringVar(&proxyKeyPath, "key", "", "the path to tls key")
 	flag.Parse()
 
+	// Build the tunnel to ANP proxy-server
 	tlsCfg, err := util.GetClientTLSConfig(proxyCACertPath, proxyCertPath, proxyKeyPath, proxyServerHost, nil)
 	if err != nil {
 		panic(err)
@@ -73,6 +69,7 @@ func main() {
 		panic(err)
 	}
 
+	// Get the target URL
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		panic(err)
@@ -82,6 +79,7 @@ func main() {
 		panic(err)
 	}
 
+	// Using the tunnel to access the target service
 	tr := &http.Transport{
 		DialContext:         dialerTunnel.DialContext,
 		TLSHandshakeTimeout: 2 * time.Second,
