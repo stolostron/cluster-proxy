@@ -66,7 +66,6 @@ func RegisterClusterManagementAddonReconciler(
 				HostNames:     sans,
 				Lister:        secretInformer.Lister(),
 				Client:        nativeClient.CoreV1(),
-				EventRecorder: events.NewInMemoryRecorder("ClusterManagementAddonReconciler"),
 			}
 		},
 		SecretLister:     secretInformer.Lister(),
