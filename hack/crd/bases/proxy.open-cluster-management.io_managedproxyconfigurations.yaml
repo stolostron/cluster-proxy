@@ -308,15 +308,18 @@ spec:
                 type: object
               serviceResolvers:
                 items:
+                  description: TODO managedcluster and lableSelector, one of two must
+                    existed.
                   properties:
                     managedCluster:
+                      type: string
+                    managedClusterLableSelector:
                       type: string
                     namespace:
                       type: string
                     serviceName:
                       type: string
                   required:
-                  - managedCluster
                   - namespace
                   - serviceName
                   type: object
@@ -402,24 +405,6 @@ spec:
               lastObservedGeneration:
                 format: int64
                 type: integer
-              serviceURLs:
-                items:
-                  properties:
-                    managedCluster:
-                      type: string
-                    namespace:
-                      type: string
-                    serviceName:
-                      type: string
-                    url:
-                      type: string
-                  required:
-                  - managedCluster
-                  - namespace
-                  - serviceName
-                  - url
-                  type: object
-                type: array
             type: object
         type: object
     served: true

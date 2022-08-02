@@ -38,7 +38,6 @@ var proxyKeyPath string
 
 var DefaultDialer = &net.Dialer{Timeout: 2 * time.Second, KeepAlive: 2 * time.Second}
 
-
 func main() {
 	flag.StringVar(&kubeconfig, "kubeconfig", "", "absolute path to the kubeconfig file")
 	flag.StringVar(&managedcluster, "managed-cluster", "", "the name of the managed cluster")

@@ -7,6 +7,7 @@ import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
 	"open-cluster-management.io/cluster-proxy/pkg/generated/clientset/versioned"
+	"open-cluster-management.io/cluster-proxy/pkg/util"
 )
 
 func GetServiceURL(ctx context.Context, kubeconfig *rest.Config, clusterName string, namespace string, serviceName string) (string, error) {
@@ -16,10 +17,21 @@ func GetServiceURL(ctx context.Context, kubeconfig *rest.Config, clusterName str
 		return "", err
 	}
 
-	for _, su := range config.Status.ServiceURLs {
-		if su.ManagedCluster == clusterName && su.Namespace == namespace && su.ServiceName == serviceName {
-			return su.URL, nil
+	for _, sr := range config.Spec.ServiceResolvers {
+		if sr.Namespace != namespace {
+			continue
 		}
+		if sr.ServiceName != serviceName {
+			continue
+		}
+		if sr.ManagedCluster != "" && sr.ManagedCluster != clusterName {
+			continue
+		}
+		// TODO consider how to using lableSeletor to find if a service is exist on target managedCluster
+		// 1. get managedclusters that can pass the lableSelector
+		// 2. if one of the above step's result matching current
+		managdclusterClient, err := versioned.NewForConfigOrDie(kubeconfig)
+		return util.GenerateServiceURL(clusterName, namespace, serviceName), nil
 	}
 
 	return "", fmt.Errorf("target (in cluster:%s, namespace: %s) service %s, url not found", clusterName, namespace, serviceName)

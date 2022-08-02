@@ -26,6 +26,7 @@ import (
 	"open-cluster-management.io/cluster-proxy/pkg/common"
 	"open-cluster-management.io/cluster-proxy/pkg/config"
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/authentication/selfsigned"
+	"open-cluster-management.io/cluster-proxy/pkg/util"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -197,7 +198,7 @@ func GetClusterProxyValueFunc(
 		}
 
 		// get agentIndentifiers
-		agentIdentifiers, otherServices, err := getAgentIndendifiersAndOtherServices(cluster.Name, proxyConfig.Spec.ServiceResolvers, proxyConfig.Status.ServiceURLs)
+		agentIdentifiers, otherServices, err := getAgentIndendifiersAndOtherServices(cluster.Name, proxyConfig.Spec.ServiceResolvers)
 		if err != nil {
 			return nil, err
 		}
@@ -241,7 +242,7 @@ func CustomSignerWithExpiry(customSignerName string, caKey, caData []byte, durat
 }
 
 // TODO add unit-test & split into two functions
-func getAgentIndendifiersAndOtherServices(clusterName string, serviceResolvers []proxyv1alpha1.ServiceResolver, serviceURLs []proxyv1alpha1.ServiceURL) (string, []map[string]string, error) {
+func getAgentIndendifiersAndOtherServices(clusterName string, serviceResolvers []proxyv1alpha1.ServiceResolver) (string, []map[string]string, error) {
 	var aids []string
 	var otherServices []map[string]string
 
@@ -249,27 +250,19 @@ func getAgentIndendifiersAndOtherServices(clusterName string, serviceResolvers [
 	aids = append(aids, fmt.Sprintf("host=%s.%s", clusterName, config.AddonInstallNamespace))
 	aids = append(aids, fmt.Sprintf("host=%s.%s.%s", clusterName, config.AddonInstallNamespace, "svc.cluster.local"))
 
+	// Create services for every service resolver
 	for _, sr := range serviceResolvers {
-		if sr.ManagedCluster != clusterName {
+		if sr.ManagedCluster != clusterName { // TODO and sr.ManagerCluster does not match the lableSelector
 			continue
 		}
-		var suGenerated bool
-		for _, su := range serviceURLs {
-			// if su equals to sr, append it to aids
-			if su.ManagedCluster == sr.ManagedCluster && su.Namespace == sr.Namespace && su.ServiceName == sr.ServiceName {
-				aids = append(aids, fmt.Sprintf("host=%s", su.URL))
-				otherServices = append(otherServices, map[string]string{
-					"url":         su.URL,
-					"serviceName": su.ServiceName,
-					"namespace":   su.Namespace,
-				})
-				suGenerated = true
-			}
-		}
-		// if no su generated for sr yet, return err
-		if !suGenerated {
-			return "", nil, fmt.Errorf("no serviceURL generated for serviceResolver %v yet", sr)
-		}
+
+		url := util.GenerateServiceURL(clusterName, sr.Namespace, sr.ServiceName)
+		aids = append(aids, fmt.Sprintf("host=%s", url))
+		otherServices = append(otherServices, map[string]string{
+			"url":         url,
+			"serviceName": sr.ServiceName,
+			"namespace":   sr.Namespace,
+		})
 	}
 
 	return strings.Join(aids, "&"), otherServices, nil

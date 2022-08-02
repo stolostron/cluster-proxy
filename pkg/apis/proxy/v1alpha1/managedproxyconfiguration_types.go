@@ -46,29 +46,19 @@ type ManagedProxyConfigurationSpec struct {
 	ServiceResolvers []ServiceResolver `json:"serviceResolvers,omitempty"`
 }
 
+// TODO managedcluster and lableSelector, one of two must existed.
 type ServiceResolver struct {
-	// +required
+	// +optional
 	ManagedCluster string `json:"managedCluster"`
+
+	// +optional
+	ManagedClusterLableSelector string `json:"managedClusterLableSelector,omitempty"`
 
 	// +required
 	Namespace string `json:"namespace"`
 
 	// +required
 	ServiceName string `json:"serviceName"`
-}
-
-type ServiceURL struct {
-	// +required
-	ManagedCluster string `json:"managedCluster"`
-
-	// +required
-	Namespace string `json:"namespace"`
-
-	// +required
-	ServiceName string `json:"serviceName"`
-
-	// +required
-	URL string `json:"url"`
 }
 
 // ManagedProxyConfigurationStatus defines the observed state of ManagedProxyConfiguration
@@ -77,8 +67,6 @@ type ManagedProxyConfigurationStatus struct {
 	LastObservedGeneration int64 `json:"lastObservedGeneration,omitempty"`
 	// +optional
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
-	// +optional
-	ServiceURLs []ServiceURL `json:"serviceURLs,omitempty"`
 }
 
 //+kubebuilder:object:root=true
