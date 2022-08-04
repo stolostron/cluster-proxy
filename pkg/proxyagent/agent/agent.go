@@ -4,6 +4,7 @@ import (
 	"context"
 	"embed"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"time"
@@ -194,7 +195,8 @@ func GetClusterProxyValueFunc(
 		if err != nil {
 			return nil, err
 		}
-		return map[string]interface{}{
+
+		values := map[string]interface{}{
 			"agentDeploymentName":      "cluster-proxy-proxy-agent",
 			"serviceDomain":            "svc.cluster.local",
 			"includeNamespaceCreation": true,
@@ -216,7 +218,17 @@ func GetClusterProxyValueFunc(
 			"includeStaticProxyAgentSecret": !v1CSRSupported,
 			"staticProxyAgentSecretCert":    certDataBase64,
 			"staticProxyAgentSecretKey":     keyDataBase64,
-		}, nil
+		}
+
+		nodeSelector, err := getNodeSelector(cluster)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get nodeSelector from managedCluster. %v", err)
+		}
+		if len(nodeSelector) != 0 {
+			values["nodeSelector"] = nodeSelector
+		}
+
+		return values, nil
 	}
 }
 
@@ -234,4 +246,22 @@ const (
 
 	AgentSecretName   = "cluster-proxy-open-cluster-management.io-proxy-agent-signer-client-cert"
 	AgentCASecretName = "cluster-proxy-ca"
+
+	// annotationNodeSelector is key name of nodeSelector annotation synced from mch
+	annotationNodeSelector = "open-cluster-management/nodeSelector"
 )
+
+func getNodeSelector(managedCluster *clusterv1.ManagedCluster) (map[string]string, error) {
+	nodeSelector := map[string]string{}
+
+	if managedCluster.GetName() == "local-cluster" {
+		annotations := managedCluster.GetAnnotations()
+		if nodeSelectorString, ok := annotations[annotationNodeSelector]; ok {
+			if err := json.Unmarshal([]byte(nodeSelectorString), &nodeSelector); err != nil {
+				return nodeSelector, fmt.Errorf("failed to unmarshal nodeSelector annotation of cluster %s, %v", managedCluster.GetName(), err)
+			}
+		}
+	}
+
+	return nodeSelector, nil
+}
