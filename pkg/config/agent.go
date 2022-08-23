@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"strings"
 
 	"k8s.io/klog/v2"
@@ -28,10 +27,6 @@ func GetParsedAgentImage(defaultAgentImageName string) (string, string, string, 
 
 func ParseImage(imageName string) (string, string, string, error) {
 	imgParts := strings.Split(imageName, "/")
-	if len(imgParts) != 2 && len(imgParts) != 3 {
-		// image name without registry is also legal.
-		return "", "", "", fmt.Errorf("invalid agent image name: %s", imageName)
-	}
 
 	registry := strings.Join(imgParts[0:len(imgParts)-1], "/")
 
