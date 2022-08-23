@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/pkg/errors"
+	"github.com/stolostron/cluster-lifecycle-api/helpers/imageregistry"
 	certificatesv1 "k8s.io/api/certificates/v1"
 	csrv1 "k8s.io/api/certificates/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -205,7 +206,24 @@ func GetClusterProxyValueFunc(
 			keyDataBase64 = base64.StdEncoding.EncodeToString(agentClientSecret.Data[corev1.TLSPrivateKeyKey])
 		}
 
-		registry, image, tag, err := config.GetParsedAgentImage(proxyConfig.Spec.ProxyAgent.Image)
+		// get image of proxy-agent(cluster-proxy-addon)
+		clusterProxyAddonImage, err := imageregistry.OverrideImageByAnnotation(cluster.GetAnnotations(), proxyConfig.Spec.ProxyAgent.Image)
+		if err != nil {
+			return nil, err
+		}
+
+		// get image of agent-addon(cluster-proxy)
+		var clusterProxyImage string
+		if len(config.AgentImageName) == 0 {
+			clusterProxyImage = clusterProxyAddonImage
+		} else {
+			clusterProxyImage = config.AgentImageName
+		}
+		clusterProxyImage, err = imageregistry.OverrideImageByAnnotation(cluster.GetAnnotations(), clusterProxyImage)
+		if err != nil {
+			return nil, err
+		}
+		registry, image, tag, err := config.ParseImage(clusterProxyImage)
 		if err != nil {
 			return nil, err
 		}
@@ -257,7 +275,7 @@ func GetClusterProxyValueFunc(
 			"registry":                      registry,
 			"image":                         image,
 			"tag":                           tag,
-			"proxyAgentImage":               proxyConfig.Spec.ProxyAgent.Image,
+			"proxyAgentImage":               clusterProxyAddonImage,
 			"proxyAgentImagePullSecrets":    proxyConfig.Spec.ProxyAgent.ImagePullSecrets,
 			"replicas":                      proxyConfig.Spec.ProxyAgent.Replicas,
 			"base64EncodedCAData":           base64.StdEncoding.EncodeToString(caCertData),
@@ -271,7 +289,6 @@ func GetClusterProxyValueFunc(
 			// support to access not only but also other other services on managed cluster
 			"agentIdentifiers": agentIdentifiers,
 			"servicesToExpose": servicesToExpose,
-		}, nil
 		}
 
 		nodeSelector, err := getNodeSelector(cluster)
@@ -303,8 +320,8 @@ func CustomSignerWithExpiry(customSignerName string, caKey, caData []byte, durat
 const (
 	ApiserverNetworkProxyLabelAddon = "open-cluster-management.io/addon"
 
-	AgentSecretName                 = "cluster-proxy-open-cluster-management.io-proxy-agent-signer-client-cert"
-	AgentCASecretName               = "cluster-proxy-ca"
+	AgentSecretName   = "cluster-proxy-open-cluster-management.io-proxy-agent-signer-client-cert"
+	AgentCASecretName = "cluster-proxy-ca"
 
 	// annotationNodeSelector is key name of nodeSelector annotation synced from mch
 	annotationNodeSelector = "open-cluster-management/nodeSelector"
