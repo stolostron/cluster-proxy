@@ -306,24 +306,6 @@ spec:
                 required:
                 - image
                 type: object
-              serviceResolvers:
-                items:
-                  description: TODO managedcluster and lableSelector, one of two must
-                    existed.
-                  properties:
-                    managedCluster:
-                      type: string
-                    managedClusterLableSelector:
-                      type: string
-                    namespace:
-                      type: string
-                    serviceName:
-                      type: string
-                  required:
-                  - namespace
-                  - serviceName
-                  type: object
-                type: array
             required:
             - authentication
             - proxyAgent

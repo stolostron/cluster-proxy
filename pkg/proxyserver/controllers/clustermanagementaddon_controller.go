@@ -120,6 +120,14 @@ func (c *ClusterManagementAddonReconciler) SetupWithManager(mgr ctrl.Manager) er
 			&eventhandler.ManagedProxyConfigurationHandler{
 				Client: mgr.GetClient(),
 			}).
+		Watches(
+			&source.Kind{
+				Type: &proxyv1alpha1.ManagedProxyServiceResolver{},
+			},
+			&eventhandler.ManagedProxyServiceResolverHandler{
+				Client: mgr.GetClient(),
+			},
+		).
 		Complete(c)
 }
 
@@ -188,8 +196,6 @@ func (c *ClusterManagementAddonReconciler) Reconcile(ctx context.Context, reques
 	if err := c.refreshStatus(isModified, config); err != nil {
 		return reconcile.Result{}, err
 	}
-
-	// TODO check the serviceResolver to make sure all inputs are valid, for example, we don't want dup
 
 	return reconcile.Result{}, nil
 }

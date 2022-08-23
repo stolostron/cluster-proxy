@@ -41,24 +41,6 @@ type ManagedProxyConfigurationSpec struct {
 	// `deploy` is where we override miscellaneous details for deploying either
 	// proxy servers or agents.
 	Deploy *ManagedProxyConfigurationDeploy `json:"deploy,omitempty"`
-
-	// +optional
-	ServiceResolvers []ServiceResolver `json:"serviceResolvers,omitempty"`
-}
-
-// TODO managedcluster and lableSelector, one of two must existed.
-type ServiceResolver struct {
-	// +optional
-	ManagedCluster string `json:"managedCluster"`
-
-	// +optional
-	ManagedClusterLableSelector string `json:"managedClusterLableSelector,omitempty"`
-
-	// +required
-	Namespace string `json:"namespace"`
-
-	// +required
-	ServiceName string `json:"serviceName"`
 }
 
 // ManagedProxyConfigurationStatus defines the observed state of ManagedProxyConfiguration

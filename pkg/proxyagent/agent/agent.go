@@ -15,6 +15,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"open-cluster-management.io/addon-framework/pkg/addonfactory"
@@ -198,7 +199,13 @@ func GetClusterProxyValueFunc(
 		}
 
 		// get agentIndentifiers
-		agentIdentifiers, otherServices, err := getAgentIndendifiersAndOtherServices(cluster.Name, proxyConfig.Spec.ServiceResolvers)
+		serviceResolverList := &proxyv1alpha1.ManagedProxyServiceResolverList{}
+		err = runtimeClient.List(context.TODO(), serviceResolverList)
+		if err != nil {
+			return nil, err
+		}
+
+		agentIdentifiers, otherServices, err := getAgentIndendifiersAndOtherServices(cluster.Name, cluster.GetLabels(), serviceResolverList.Items)
 		if err != nil {
 			return nil, err
 		}
@@ -242,7 +249,7 @@ func CustomSignerWithExpiry(customSignerName string, caKey, caData []byte, durat
 }
 
 // TODO add unit-test & split into two functions
-func getAgentIndendifiersAndOtherServices(clusterName string, serviceResolvers []proxyv1alpha1.ServiceResolver) (string, []map[string]string, error) {
+func getAgentIndendifiersAndOtherServices(clusterName string, clusterlabels map[string]string, serviceResolvers []proxyv1alpha1.ManagedProxyServiceResolver) (string, []map[string]string, error) {
 	var aids []string
 	var otherServices []map[string]string
 
@@ -252,16 +259,20 @@ func getAgentIndendifiersAndOtherServices(clusterName string, serviceResolvers [
 
 	// Create services for every service resolver
 	for _, sr := range serviceResolvers {
-		if sr.ManagedCluster != clusterName { // TODO and sr.ManagerCluster does not match the lableSelector
+		selector, err := metav1.LabelSelectorAsSelector(sr.Spec.ManagedClusterSelector)
+		if err != nil {
+			return "", nil, err
+		}
+		if !selector.Matches(labels.Set(clusterlabels)) {
 			continue
 		}
 
-		url := util.GenerateServiceURL(clusterName, sr.Namespace, sr.ServiceName)
+		url := util.GenerateServiceURL(clusterName, sr.Namespace, sr.Spec.ServiceName)
 		aids = append(aids, fmt.Sprintf("host=%s", url))
 		otherServices = append(otherServices, map[string]string{
 			"url":         url,
-			"serviceName": sr.ServiceName,
-			"namespace":   sr.Namespace,
+			"serviceName": sr.Spec.ServiceName,
+			"namespace":   sr.Spec.Namespace,
 		})
 	}
 
