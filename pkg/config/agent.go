@@ -28,6 +28,8 @@ func GetParsedAgentImage(defaultAgentImageName string) (string, string, string, 
 func ParseImage(imageName string) (string, string, string, error) {
 	imgParts := strings.Split(imageName, "/")
 
+	// TODO: add regex check
+
 	registry := strings.Join(imgParts[0:len(imgParts)-1], "/")
 
 	parts := strings.Split(imgParts[len(imgParts)-1], ":")
