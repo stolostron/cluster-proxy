@@ -7,6 +7,7 @@ require (
 	github.com/onsi/gomega v1.17.0
 	github.com/openshift/library-go v0.0.0-20220525173854-9b950a41acdc
 	github.com/pkg/errors v0.9.1
+	github.com/stolostron/cluster-lifecycle-api v0.0.0-20220714081119-eae2fe1f05fd
 	github.com/stretchr/testify v1.7.0
 	google.golang.org/grpc v1.42.0
 	k8s.io/api v0.24.0
@@ -15,10 +16,10 @@ require (
 	k8s.io/klog/v2 v2.60.1
 	k8s.io/utils v0.0.0-20220210201930-3a6ce19ff2f9
 	open-cluster-management.io/addon-framework v0.4.1-0.20220721073535-12c9395bde82
-	open-cluster-management.io/api v0.5.1-0.20220112073018-2d280a97a052
+	open-cluster-management.io/api v0.7.0
 	sigs.k8s.io/apiserver-network-proxy v0.0.27
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.30
-	sigs.k8s.io/controller-runtime v0.11.0
+	sigs.k8s.io/controller-runtime v0.11.1
 )
 
 require (
