@@ -5,34 +5,50 @@ import (
 	"fmt"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/rest"
+	clusterv1client "open-cluster-management.io/api/client/cluster/clientset/versioned"
 	"open-cluster-management.io/cluster-proxy/pkg/generated/clientset/versioned"
 	"open-cluster-management.io/cluster-proxy/pkg/util"
 )
 
 func GetServiceURL(ctx context.Context, kubeconfig *rest.Config, clusterName string, namespace string, serviceName string) (string, error) {
-	managedproxyconfigurateionClient := versioned.NewForConfigOrDie(kubeconfig)
-	config, err := managedproxyconfigurateionClient.ProxyV1alpha1().ManagedProxyConfigurations().Get(ctx, "cluster-proxy", v1.GetOptions{})
+	client := versioned.NewForConfigOrDie(kubeconfig)
+	mpsrList, err := client.ProxyV1alpha1().ManagedProxyServiceResolvers().List(ctx, v1.ListOptions{})
 	if err != nil {
 		return "", err
 	}
 
-	for _, sr := range config.Spec.ServiceResolvers {
-		if sr.Namespace != namespace {
+	// Get labels of the managedCluster
+	clusterClient, err := clusterv1client.NewForConfig(kubeconfig)
+	if err != nil {
+		return "", err
+	}
+	managedCluster, err := clusterClient.ClusterV1().ManagedClusters().Get(ctx, clusterName, v1.GetOptions{})
+	if err != nil {
+		return "", err
+	}
+
+	// Return when namespace, serviceName and labels of the managedCluster are all matched
+	for _, sr := range mpsrList.Items {
+		if sr.Spec.Namespace != namespace {
 			continue
 		}
-		if sr.ServiceName != serviceName {
+
+		if sr.Spec.ServiceName != serviceName {
 			continue
 		}
-		if sr.ManagedCluster != "" && sr.ManagedCluster != clusterName {
+
+		selector, err := v1.LabelSelectorAsSelector(sr.Spec.ManagedClusterSelector)
+		if err != nil {
+			return "", err
+		}
+		if !selector.Matches(labels.Set(managedCluster.Labels)) {
 			continue
 		}
-		// TODO consider how to using lableSeletor to find if a service is exist on target managedCluster
-		// 1. get managedclusters that can pass the lableSelector
-		// 2. if one of the above step's result matching current
-		managdclusterClient, err := versioned.NewForConfigOrDie(kubeconfig)
+
 		return util.GenerateServiceURL(clusterName, namespace, serviceName), nil
 	}
 
-	return "", fmt.Errorf("target (in cluster:%s, namespace: %s) service %s, url not found", clusterName, namespace, serviceName)
+	return "", fmt.Errorf("Not found any suitable ManagedProxyServiceResolver for (cluster:%s, namespace: %s, service: %s)", clusterName, namespace, serviceName)
 }
