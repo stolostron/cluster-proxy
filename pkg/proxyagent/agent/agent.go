@@ -267,7 +267,7 @@ func getAgentIndendifiersAndOtherServices(clusterName string, clusterlabels map[
 			continue
 		}
 
-		url := util.GenerateServiceURL(clusterName, sr.Namespace, sr.Spec.ServiceName)
+		url := util.GenerateServiceURL(clusterName, sr.Spec.Namespace, sr.Spec.ServiceName)
 		aids = append(aids, fmt.Sprintf("host=%s", url))
 		otherServices = append(otherServices, map[string]string{
 			"url":         url,
