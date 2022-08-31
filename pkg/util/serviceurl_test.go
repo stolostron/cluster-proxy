@@ -6,5 +6,5 @@ import (
 )
 
 func TestGenerateServiceURL(t *testing.T) {
-	fmt.Println(GenerateServiceURL("cluster", "namespace", "service"))
+	fmt.Println(GenerateServiceURL("local-cluster", "default", "local-hello"))
 }
