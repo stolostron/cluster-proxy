@@ -27,14 +27,21 @@ var serviceName string
 var proxyServerHost string
 var proxyServerPort string
 
-// Assumes that the cluster-proxy is installed in the open-cluster-management-addon namespace.
-// `proxyCACert` could be found in Secret `proxy-server-ca` in the `open-cluster-management-addon`` namespace.
+// Assumes that the cluster-proxy is installed in the multicluster-engine namespace.
+// `proxyCACert` could be found in Secret `proxy-server-ca` in the `multicluster-engine` namespace.
 var proxyCACertPath string
 
-// Assumes that the cluster-proxy is installed in the open-cluster-management-addon namespace.
-// `proxyCert` and `proxyKey` could be found in Secret `proxy-client` in the `open-cluster-management-addon`` namespace.
+// Assumes that the cluster-proxy is installed in the multicluster-engine namespace.
+// `proxyCert` and `proxyKey` could be found in Secret `proxy-client` in the `multicluster-engine` namespace.
 var proxyCertPath string
 var proxyKeyPath string
+
+// You can also run the following command to get credientials:
+/*
+k get secret -n multicluster-engine proxy-server-ca -o jsonpath='{.data.ca\.crt}' | base64 -D > ./temp/ca.crt && \
+k get secret -n multicluster-engine proxy-client -o jsonpath='{.data.tls\.crt}' | base64 -D > ./temp/tls.crt && \
+k get secret -n multicluster-engine proxy-client -o jsonpath='{.data.tls\.key}' | base64 -D > ./temp/tls.key
+*/
 
 var DefaultDialer = &net.Dialer{Timeout: 2 * time.Second, KeepAlive: 2 * time.Second}
 
