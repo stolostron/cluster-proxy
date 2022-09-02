@@ -14,7 +14,7 @@ func TestGetServiceURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	url, err := GetServiceURL(context.Background(), cfg, "local-cluster", "default", "busybox")
+	url, err := GetProxyHost(context.Background(), cfg, "local-cluster", "default", "busybox")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -58,7 +58,7 @@ func main() {
 	flag.StringVar(&proxyKeyPath, "key", "", "the path to tls key")
 	flag.Parse()
 
-	// Build the tunnel to ANP proxy-server
+	// Get "proxy dialer" based on konnectivity client
 	tlsCfg, err := util.GetClientTLSConfig(proxyCACertPath, proxyCertPath, proxyKeyPath, proxyServerHost, nil)
 	if err != nil {
 		panic(err)
@@ -75,24 +75,25 @@ func main() {
 		panic(err)
 	}
 
-	// Get the target URL
+	// Get the "proxy Host" based on cluster-proxy client
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		panic(err)
 	}
-	targetServiceURl, err := client.GetServiceURL(context.Background(), cfg, managedcluster, namespace, serviceName)
+	proxyHost, err := client.GetProxyHost(context.Background(), cfg, managedcluster, namespace, serviceName)
 	if err != nil {
 		panic(err)
 	}
 
-	// Using the tunnel to access the target service
+	// Replace the default dialer with the proxy dialer
 	tr := &http.Transport{
 		DialContext:         dialerTunnel.DialContext,
 		TLSHandshakeTimeout: 2 * time.Second,
 	}
 	client := http.Client{Transport: tr}
 
-	resp, err := client.Get("http://" + targetServiceURl + ":8000")
+	// Replace the host with the proxy host
+	resp, err := client.Get("http://" + proxyHost + ":8000" + "/hello")
 	if err != nil {
 		panic(err)
 	}

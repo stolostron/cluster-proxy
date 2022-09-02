@@ -12,7 +12,7 @@ import (
 	"open-cluster-management.io/cluster-proxy/pkg/util"
 )
 
-func GetServiceURL(ctx context.Context, kubeconfig *rest.Config, clusterName string, namespace string, serviceName string) (string, error) {
+func GetProxyHost(ctx context.Context, kubeconfig *rest.Config, clusterName string, namespace string, serviceName string) (string, error) {
 	client := versioned.NewForConfigOrDie(kubeconfig)
 	mpsrList, err := client.ProxyV1alpha1().ManagedProxyServiceResolvers().List(ctx, v1.ListOptions{})
 	if err != nil {
