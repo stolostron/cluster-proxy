@@ -13,9 +13,9 @@ import (
 	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
 	"k8s.io/client-go/tools/clientcmd"
-	"open-cluster-management.io/cluster-proxy/client"
+	clusterproxyclient "open-cluster-management.io/cluster-proxy/client"
 
-	konnectivity "sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client"
+	konnectivityclient "sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client"
 	"sigs.k8s.io/apiserver-network-proxy/pkg/util"
 )
 
@@ -63,7 +63,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	proxyDialer, err := konnectivity.CreateSingleUseGrpcTunnel(
+	proxyDialer, err := konnectivityclient.CreateSingleUseGrpcTunnel(
 		context.TODO(),
 		net.JoinHostPort(proxyServerHost, proxyServerPort),
 		grpc.WithTransportCredentials(grpccredentials.NewTLS(tlsCfg)),
@@ -80,7 +80,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	proxyHost, err := client.GetProxyHost(context.Background(), cfg, managedcluster, namespace, serviceName)
+	proxyHost, err := clusterproxyclient.GetProxyHost(context.Background(), cfg, managedcluster, namespace, serviceName)
 	if err != nil {
 		panic(err)
 	}
