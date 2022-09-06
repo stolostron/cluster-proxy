@@ -58,12 +58,12 @@ func main() {
 	flag.StringVar(&proxyKeyPath, "key", "", "the path to tls key")
 	flag.Parse()
 
-	// Get "proxy dialer" based on konnectivity client
+	// Step1: Get "proxy dialer" based on konnectivity client
 	tlsCfg, err := util.GetClientTLSConfig(proxyCACertPath, proxyCertPath, proxyKeyPath, proxyServerHost, nil)
 	if err != nil {
 		panic(err)
 	}
-	dialerTunnel, err := konnectivity.CreateSingleUseGrpcTunnel(
+	proxyDialer, err := konnectivity.CreateSingleUseGrpcTunnel(
 		context.TODO(),
 		net.JoinHostPort(proxyServerHost, proxyServerPort),
 		grpc.WithTransportCredentials(grpccredentials.NewTLS(tlsCfg)),
@@ -75,7 +75,7 @@ func main() {
 		panic(err)
 	}
 
-	// Get the "proxy Host" based on cluster-proxy client
+	// Step2: Get the "proxy Host" based on cluster-proxy client
 	cfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
 	if err != nil {
 		panic(err)
@@ -85,14 +85,14 @@ func main() {
 		panic(err)
 	}
 
-	// Replace the default dialer with the proxy dialer
+	// Step3: Replace the default dialer with the proxy dialer
 	tr := &http.Transport{
-		DialContext:         dialerTunnel.DialContext,
+		DialContext:         proxyDialer.DialContext,
 		TLSHandshakeTimeout: 2 * time.Second,
 	}
 	client := http.Client{Transport: tr}
 
-	// Replace the host with the proxy host
+	// Step4: Replace the host with the proxy host
 	resp, err := client.Get("http://" + proxyHost + ":8000" + "/hello")
 	if err != nil {
 		panic(err)
