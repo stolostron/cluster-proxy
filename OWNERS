@@ -1,9 +1,9 @@
-reviewers:
+approvers:
 - skeeey
 - xuezhaojun
 - qiujian16
 
-approvers:
-- xuezhaojun
+reviewers:
 - skeeey
+- xuezhaojun
 - qiujian16
