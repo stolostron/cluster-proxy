@@ -3,7 +3,17 @@
 FROM registry.ci.openshift.org/stolostron/builder:go1.19-linux AS builder
 
 WORKDIR /workspace
-COPY . .
+
+# Copy the Go Modules manifests
+COPY go.mod go.mod
+COPY go.sum go.sum
+# cache deps before building and copying source so that we don't need to re-download as much
+# and so that source changes don't invalidate our downloaded layer
+RUN go mod download
+
+# Copy the go source
+COPY cmd/ cmd/
+COPY pkg pkg/
 
 # Build addons
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o agent cmd/addon-agent/main.go
