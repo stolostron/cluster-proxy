@@ -50,7 +50,7 @@ spec:
           - name: build-task-status
             value: $(tasks.build-container.status)
         taskRef:
-          bundle: quay.io/redhat-appstudio-tekton-catalog/task-summary:0.1@sha256:529f8c56d0e05122317fb8d9895a3dfc12390c889be9aaeb642b84b83a8fab52
+          bundle: quay.io/redhat-appstudio-tekton-catalog/task-summary:0.2@sha256:6a54bf5cee74c54ed5e08d4b11476cc29fa119d02a2d715005496737de885d49
           name: summary
     params:
       - description: Source Repository URL
@@ -135,7 +135,7 @@ spec:
         runAfter:
           - init
         taskRef:
-          bundle: quay.io/redhat-appstudio-tekton-catalog/task-git-clone:0.1@sha256:982e53397367ea9680b5cc543f5cbfc8e90124ffb463551eea33e4477d0a7ec6
+          bundle: quay.io/redhat-appstudio-tekton-catalog/task-git-clone:0.1@sha256:ddc1b741a59e24817b24f190aab820700b6a8cf78cdd1827c403375bdba8aeee
           name: git-clone
         when:
           - input: $(tasks.init.results.build)
@@ -181,7 +181,7 @@ spec:
         runAfter:
           - prefetch-dependencies
         taskRef:
-          bundle: quay.io/redhat-appstudio-tekton-catalog/task-buildah:0.1@sha256:8a016b58a1f273d6b01045eeb982c370e79bf050e85e0c16eca970789704643a
+          bundle: quay.io/redhat-appstudio-tekton-catalog/task-buildah:0.1@sha256:e1e6c6308b8c7d5aa2faa02129af7fcc9e8dc4bbfe741c1acab5c9edca28fb77
           name: buildah
         when:
           - input: $(tasks.init.results.build)
