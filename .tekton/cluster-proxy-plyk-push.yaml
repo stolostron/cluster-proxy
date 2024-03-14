@@ -7,10 +7,10 @@ metadata:
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-event: '[push]'
-    pipelinesascode.tekton.dev/on-target-branch: '[backplane-2.4]'
+    pipelinesascode.tekton.dev/on-target-branch: '[main]'
   creationTimestamp: null
   labels:
-    appstudio.openshift.io/application: mce-24
+    appstudio.openshift.io/application: cluster-proxy
     appstudio.openshift.io/component: cluster-proxy-plyk
     pipelines.appstudio.openshift.io/type: build
   name: cluster-proxy-plyk-on-push
@@ -22,7 +22,7 @@ spec:
   - name: git-url
     value: '{{repo_url}}'
   - name: output-image
-    value: quay.io/redhat-user-workloads/crt-redhat-acm-tenant/mce-24/cluster-proxy-plyk:{{revision}}
+    value: quay.io/redhat-user-workloads/crt-redhat-acm-tenant/cluster-proxy/cluster-proxy-plyk:{{revision}}
   - name: path-context
     value: .
   - name: revision
