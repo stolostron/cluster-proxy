@@ -1,4 +1,3 @@
-
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 IMAGE_REGISTRY_NAME ?= quay.io/open-cluster-management
@@ -142,3 +141,13 @@ build-e2e:
 
 test-e2e: build-e2e
 	./bin/e2e --test-cluster $(E2E_TEST_CLUSTER_NAME)
+
+# Add this new target for multi-arch builds
+images-multi-arch:
+	docker buildx create --use
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		-f cmd/pure.Dockerfile \
+		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
+		--push .
