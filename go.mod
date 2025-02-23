@@ -7,7 +7,7 @@ require (
 	github.com/onsi/gomega v1.32.0
 	github.com/openshift/library-go v0.0.0-20240621150525-4bb4238aef81
 	github.com/pkg/errors v0.9.1
-	github.com/stolostron/cluster-lifecycle-api v0.0.0-20240813023109-42b5c115d0a3
+	github.com/stolostron/cluster-lifecycle-api v0.0.0-20240918064238-a5e71b599118
 	github.com/stretchr/testify v1.9.0
 	google.golang.org/grpc v1.62.1
 	k8s.io/api v0.30.2
