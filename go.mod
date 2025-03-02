@@ -9,7 +9,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.15.1
 	github.com/stolostron/cluster-lifecycle-api v0.0.0-20230829070855-cd9b187cca82
-	github.com/stretchr/testify v1.8.1
+	github.com/stretchr/testify v1.10.0
 	google.golang.org/grpc v1.51.0
 	k8s.io/api v0.27.4
 	k8s.io/apimachinery v0.27.4
