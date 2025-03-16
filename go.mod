@@ -16,7 +16,7 @@ require (
 	k8s.io/klog/v2 v2.120.1
 	k8s.io/utils v0.0.0-20240310230437-4693a0247e57
 	open-cluster-management.io/addon-framework v0.11.0
-	open-cluster-management.io/api v0.15.0
+	open-cluster-management.io/api v0.16.1
 	open-cluster-management.io/sdk-go v0.15.0
 	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.30.2
 	sigs.k8s.io/controller-runtime v0.18.4
