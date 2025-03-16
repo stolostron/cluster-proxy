@@ -123,19 +123,33 @@ type HubPermissionConfig struct {
 	// +kubebuilder:validation:Enum:=CurrentCluster;SingleNamespace
 	Type HubPermissionsBindingType `json:"type"`
 
-	// RoleRef is an reference to the permission resource. it could be a role or a cluster role,
-	// the user must make sure it exist on the hub cluster.
-	// +kubebuilder:validation:Required
-	RoleRef rbacv1.RoleRef `json:"roleRef"`
+	// CurrentCluster contains the configuration of CurrentCluster type binding.
+	// It is required when the type is CurrentCluster.
+	CurrentCluster *CurrentClusterBindingConfig `json:"currentCluster,omitempty"`
 
 	// SingleNamespace contains the configuration of SingleNamespace type binding.
 	// It is required when the type is SingleNamespace
 	SingleNamespace *SingleNamespaceBindingConfig `json:"singleNamespace,omitempty"`
 }
 
+type CurrentClusterBindingConfig struct {
+	// ClusterRoleName is the name of the clusterrole the addon agent is bound. A rolebinding
+	// will be created referring to this cluster role in each cluster namespace.
+	// The user must make sure the clusterrole exists on the hub cluster.
+	// +kubebuilder:validation:Required
+	ClusterRoleName string `json:"clusterRoleName"`
+}
+
 type SingleNamespaceBindingConfig struct {
+	// Namespace is the namespace the addon agent has permissions to bind to. A rolebinding
+	// will be created in this namespace referring to the RoleRef.
 	// +kubebuilder:validation:Required
 	Namespace string `json:"namespace"`
+
+	// RoleRef is an reference to the permission resource. it could be a role or a cluster role,
+	// the user must make sure it exist on the hub cluster.
+	// +kubebuilder:validation:Required
+	RoleRef rbacv1.RoleRef `json:"roleRef"`
 }
 
 type CustomSignerRegistrationConfig struct {
@@ -143,6 +157,7 @@ type CustomSignerRegistrationConfig struct {
 	// +required
 	// +kubebuilder:validation:MaxLength=571
 	// +kubebuilder:validation:MinLength=5
+	// +kubebuilder:validation:Pattern=^([a-z0-9][a-z0-9-]*[a-z0-9]\.)+[a-z]+\/[a-z0-9-\.]+$
 	SignerName string `json:"signerName"`
 
 	// Subject is the user subject of the addon agent to be registered to the hub.
@@ -155,11 +170,10 @@ type CustomSignerRegistrationConfig struct {
 	Subject *Subject `json:"subject,omitempty"`
 
 	// SigningCA represents the reference of the secret on the hub cluster to sign the CSR
-	// the secret must be in the namespace where the addon-manager is located, and the secret
-	// type must be "kubernetes.io/tls"
+	// the secret type must be "kubernetes.io/tls"
 	// Note: The addon manager will not have permission to access the secret by default, so
-	// the user must grant the permission to the addon manager(by creating rolebinding for
-	// the addon-manager serviceaccount "addon-manager-controller-sa").
+	// the user must grant the permission to the addon manager(by creating rolebinding/clusterrolebinding
+	// for the addon-manager serviceaccount "addon-manager-controller-sa").
 	// +kubebuilder:validation:Required
 	SigningCA SigningCARef `json:"signingCA"`
 }
@@ -170,6 +184,9 @@ type SigningCARef struct {
 	// Name of the signing CA secret
 	// +kubebuilder:validation:Required
 	Name string `json:"name"`
+	// Namespace of the signing CA secret, the namespace of the addon-manager will be used if it is not set.
+	// +optional
+	Namespace string `json:"namespace,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
