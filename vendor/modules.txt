@@ -1022,7 +1022,7 @@ open-cluster-management.io/sdk-go/pkg/basecontroller/factory
 open-cluster-management.io/sdk-go/pkg/certrotation
 open-cluster-management.io/sdk-go/pkg/helpers
 open-cluster-management.io/sdk-go/pkg/patcher
-# sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.30.2
+# sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.32.0
 ## explicit; go 1.21
 sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client
 sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client/metrics
