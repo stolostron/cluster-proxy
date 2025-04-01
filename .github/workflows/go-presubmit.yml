@@ -13,8 +13,8 @@ on:
 
 env:
   # Common versions
-  GO_VERSION: '1.20'
-  GO_REQUIRED_MIN_VERSION: ''
+  GO_VERSION: "1.23"
+  GO_REQUIRED_MIN_VERSION: ""
 
 jobs:
   build:
@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: install Go
         uses: actions/setup-go@v2
         with:
@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: Linelint
         uses: fernandrone/linelint@0.0.4
   verify:
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: install Go
         uses: actions/setup-go@v2
         with:
@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: install Go
         uses: actions/setup-go@v2
         with:
@@ -62,9 +62,9 @@ jobs:
       - name: unit
         run: make test
       - name: report coverage
-        uses: codecov/codecov-action@v3
+        uses: codecov/codecov-action@v4
         with:
-          token: ${{secrets.CODECOV_UPLOAD_TOKEN}}
+          token: ${{ secrets.CODECOV_UPLOAD_TOKEN }}
           files: ./cover.out
           flags: unit
           name: unit
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: install Go
         uses: actions/setup-go@v2
         with:
@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
       - name: install Go
         uses: actions/setup-go@v2
         with:
@@ -99,7 +99,7 @@ jobs:
       - name: Create k8s Kind Cluster
         uses: helm/kind-action@v1.2.0
       - name: Prepare OCM testing environment
-        run: | # fixed the OCM to the latest released version
+        run: |
           clusteradm init --output-join-command-file join.sh --wait
           sh -c "$(cat join.sh) loopback --force-internal-endpoint-lookup"
           clusteradm accept --clusters loopback --wait 30
@@ -113,7 +113,7 @@ jobs:
           helm install \
              -n open-cluster-management-addon --create-namespace \
              cluster-proxy charts/cluster-proxy/ \
-             --set tag=latest
+             --set tag=latest --set installByPlacement.placementName=default
       - name: Build&Run e2e test
         run: |
           kubectl wait --for=condition=ProxyServerDeployed=true managedproxyconfiguration cluster-proxy --timeout=60s

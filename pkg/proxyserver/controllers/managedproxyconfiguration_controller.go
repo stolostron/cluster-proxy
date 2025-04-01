@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"open-cluster-management.io/addon-framework/pkg/certrotation"
 	proxyv1alpha1 "open-cluster-management.io/cluster-proxy/pkg/apis/proxy/v1alpha1"
 	"open-cluster-management.io/cluster-proxy/pkg/common"
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/authentication/selfsigned"
+	"open-cluster-management.io/sdk-go/pkg/certrotation"
 
 	"github.com/openshift/library-go/pkg/crypto"
 	"github.com/openshift/library-go/pkg/operator/events"
@@ -541,11 +541,11 @@ func getAnnotation(list []proxyv1alpha1.AnnotationVar) map[string]string {
 	annotation := make(map[string]string, len(list))
 	for _, v := range list {
 		if errs := validation.IsQualifiedName(v.Key); len(errs) == 0 {
-			klog.Warningf("Annotation key %s validate failed: %s, skip it!", strings.Join(errs, ";"))
+			klog.Warningf("Annotation key %s validate failed: %s, skip it!", v.Key, strings.Join(errs, ";"))
 			continue
 		}
 		if errs := validation.IsValidLabelValue(v.Value); len(errs) > 0 {
-			klog.Warningf("Annotation value %s validate failed: %s, skip it!", strings.Join(errs, ";"))
+			klog.Warningf("Annotation value %s validate failed: %s, skip it!", v.Key, strings.Join(errs, ";"))
 			continue
 		}
 		annotation[v.Key] = v.Value
