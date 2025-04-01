@@ -1,10 +1,10 @@
+
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 IMAGE_REGISTRY_NAME ?= quay.io/open-cluster-management
 IMAGE_NAME = cluster-proxy
 IMAGE_TAG ?= latest
 E2E_TEST_CLUSTER_NAME ?= loopback
-CONTAINER_ENGINE ?= podman
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS ?= "crd:crdVersions={v1},allowDangerousTypes=true,generateEmbeddedObjectMeta=true"
 
@@ -57,7 +57,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 golint:
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.54.1
 	golangci-lint run --timeout=3m ./...
 
 verify: fmt vet golint
@@ -72,16 +72,16 @@ build: generate fmt vet
 	go build -o bin/addon-agent cmd/addon-agent/main.go
 
 docker-build: test ## Build docker image with the manager.
-	$(CONTAINER_ENGINE) build -t ${IMG} .
+	docker build -t ${IMG} .
 
 docker-push: ## Push docker image with the manager.
-	$(CONTAINER_ENGINE) push ${IMG}
+	docker push ${IMG}
 
 ##@ Deployment
 
 CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
 controller-gen: ## Download controller-gen locally if necessary.
-	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0)
+	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.14.0)
 
 KUSTOMIZE = $(shell pwd)/bin/kustomize
 kustomize: ## Download kustomize locally if necessary.
@@ -112,21 +112,13 @@ client-gen:
  	--versions=open-cluster-management.io/cluster-proxy/pkg/apis/proxy/v1alpha1
 
 images:
-	$(CONTAINER_ENGINE) build \
+	docker build \
 		-f cmd/Dockerfile \
 		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
 
 pure-image:
-	$(CONTAINER_ENGINE) build \
-		-f cmd/pure.Dockerfile \
-		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
-		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
-
-pure-image-amd64:
-	$(CONTAINER_ENGINE) buildx build \
-		--platform linux/amd64 \
-		--load \
+	docker build \
 		-f cmd/pure.Dockerfile \
 		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
@@ -141,7 +133,7 @@ test-integration: manifests generate fmt vet
 		go test ./test/integration/... -coverprofile cover.out
 
 e2e-job-image:
-	$(CONTAINER_ENGINE) build \
+	docker build \
 		-f test/e2e/job/Dockerfile \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME)-e2e-job:$(IMAGE_TAG) .
 
