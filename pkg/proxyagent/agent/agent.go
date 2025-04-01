@@ -40,6 +40,8 @@ import (
 var FS embed.FS
 
 const (
+	ManagedClusterConfigurationName = "cluster-proxy"
+
 	ProxyAgentSignerName = "open-cluster-management.io/proxy-agent-signer"
 
 	// serviceDomain must added because go dns client won't recursivly search CNAME.
@@ -140,11 +142,13 @@ func NewAgentAddon(
 		).
 		WithGetValuesFuncs(
 			GetClusterProxyValueFunc(runtimeClient, nativeClient, signerNamespace, caCertData, v1CSRSupported, enableKubeApiProxy),
+			GetClusterProxyValueStolostronFunc(runtimeClient, nativeClient, signerNamespace),
 			addonfactory.GetAddOnDeploymentConfigValues(
 				utils.NewAddOnDeploymentConfigGetter(addonClient),
 				toAgentAddOnChartValues(caCertData),
 			),
 		).
+		WithConfigCheckEnabledOption().
 		WithAgentInstallNamespace(agentInstallNamespaceFunc(utils.NewAddOnDeploymentConfigGetter(addonClient)))
 
 	return agentFactory.BuildHelmAgentAddon()
@@ -175,23 +179,9 @@ func GetClusterProxyValueFunc(
 ) addonfactory.GetValuesFunc {
 	return func(cluster *clusterv1.ManagedCluster,
 		addon *addonv1alpha1.ManagedClusterAddOn) (addonfactory.Values, error) {
-
-		managedProxyConfigurations := []string{}
-		for _, configReference := range addon.Status.ConfigReferences {
-			if config.IsManagedProxyConfiguration(configReference.ConfigGroupResource) && configReference.DesiredConfig != nil {
-				managedProxyConfigurations = append(managedProxyConfigurations, configReference.DesiredConfig.Name)
-			}
-		}
-
-		// only handle there is only one managed proxy configuration for one addon
-		// TODO may consider to handle multiple managed proxy configurations for one addon
-		if len(managedProxyConfigurations) != 1 {
-			return nil, fmt.Errorf("unexpected managed proxy configurations: %v", managedProxyConfigurations)
-		}
-
 		proxyConfig := &proxyv1alpha1.ManagedProxyConfiguration{}
 		if err := runtimeClient.Get(context.TODO(), types.NamespacedName{
-			Name: managedProxyConfigurations[0],
+			Name: ManagedClusterConfigurationName,
 		}, proxyConfig); err != nil {
 			return nil, err
 		}
@@ -260,6 +250,12 @@ func GetClusterProxyValueFunc(
 			return nil, err
 		}
 
+		// get agent namespace from addon status
+		namespace := config.DefaultAddonInstallNamespace
+		if len(addon.Status.Namespace) > 0 {
+			namespace = addon.Status.Namespace
+		}
+
 		// Get agentIndentifiers and servicesToExpose.
 		// agetnIdentifiers is used in `--agent-identifiers` flag in addon-agent-deployment.yaml.
 		// servicesToExpose defines the services we want to expose to the hub.
@@ -283,16 +279,25 @@ func GetClusterProxyValueFunc(
 			return nil, err
 		}
 
-		servicesToExpose := removeDupAndSortServices(managedProxyServiceResolverToFilterServiceToExpose(serviceResolverList.Items, managedClusterSetMap, cluster.Name))
+		// add service-proxy service into aids
+		// in downstream, we have a service-proxy container bind with service-proxy service, all traffic from the hub first go here and then redirect to another service
+		// so in downstream, we add this special service as one of the agentIdentifiers
+		servicesToExpose := removeDupAndSortServices(append(managedProxyServiceResolverToFilterServiceToExpose(serviceResolverList.Items, managedClusterSetMap, cluster.Name),
+			serviceToExpose{
+				Host:         util.GenerateServiceURL(cluster.Name, namespace, "cluster-proxy-service-proxy"),
+				ExternalName: fmt.Sprintf("%s.%s", "cluster-proxy-service-proxy", namespace),
+			}))
 
 		var aids []string
-		// add default kube-apiserver agentIdentifiers
 
-		// get agent namespace from addon status
-		namespace := config.DefaultAddonInstallNamespace
-		if len(addon.Status.Namespace) > 0 {
-			namespace = addon.Status.Namespace
-		}
+		// Add service-proxy host as the default agentIdentifier.
+		// Using SHA256 to hash cluster.name to:
+		// 1. Generate consistent and unique host names
+		// 2. Keep host name length under DNS limit (max 64 chars)
+		serviceProxyHost := fmt.Sprintf("cluster-%x", sha256.Sum256([]byte(cluster.Name)))[:64-len("cluster-")] + ".open-cluster-management.proxy"
+		aids = append(aids, fmt.Sprintf("host=%s", serviceProxyHost))
+
+		// add default kube-apiserver agentIdentifiers
 		if enableKubeApiProxy {
 			aids = append(aids, fmt.Sprintf("host=%s", cluster.Name))
 			aids = append(aids, fmt.Sprintf("host=%s.%s", cluster.Name, namespace))
@@ -326,6 +331,7 @@ func GetClusterProxyValueFunc(
 			"staticProxyAgentSecretKey":     keyDataBase64,
 			// support to access not only but also other services on managed cluster
 			"agentIdentifiers":   agentIdentifiers,
+			"serviceProxyHost":   serviceProxyHost,
 			"servicesToExpose":   servicesToExpose,
 			"enableKubeApiProxy": enableKubeApiProxy,
 		}, nil
