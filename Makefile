@@ -1,12 +1,12 @@
-
 # Image URL to use all building/pushing image targets
 IMG ?= controller:latest
 IMAGE_REGISTRY_NAME ?= quay.io/open-cluster-management
 IMAGE_NAME = cluster-proxy
 IMAGE_TAG ?= latest
 E2E_TEST_CLUSTER_NAME ?= loopback
+CONTAINER_ENGINE ?= podman
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
-CRD_OPTIONS ?= "crd:trivialVersions=true,preserveUnknownFields=false"
+CRD_OPTIONS ?= "crd:crdVersions={v1},allowDangerousTypes=true,generateEmbeddedObjectMeta=true"
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -57,7 +57,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 golint:
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.54.1
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 	golangci-lint run --timeout=3m ./...
 
 verify: fmt vet golint
@@ -72,30 +72,16 @@ build: generate fmt vet
 	go build -o bin/addon-agent cmd/addon-agent/main.go
 
 docker-build: test ## Build docker image with the manager.
-	docker build -t ${IMG} .
+	$(CONTAINER_ENGINE) build -t ${IMG} .
 
 docker-push: ## Push docker image with the manager.
-	docker push ${IMG}
+	$(CONTAINER_ENGINE) push ${IMG}
 
 ##@ Deployment
 
-install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | kubectl apply -f -
-
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | kubectl delete -f -
-
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | kubectl apply -f -
-
-undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/default | kubectl delete -f -
-
-
 CONTROLLER_GEN = $(shell pwd)/bin/controller-gen
 controller-gen: ## Download controller-gen locally if necessary.
-	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.4.1)
+	$(call go-get-tool,$(CONTROLLER_GEN),sigs.k8s.io/controller-tools/cmd/controller-gen@v0.15.0)
 
 KUSTOMIZE = $(shell pwd)/bin/kustomize
 kustomize: ## Download kustomize locally if necessary.
@@ -116,7 +102,7 @@ rm -rf $$TMP_DIR ;\
 endef
 
 client-gen:
-	go install k8s.io/code-generator/cmd/client-gen@v0.23.0
+	go install k8s.io/code-generator/cmd/client-gen@v0.29.2
 	go install sigs.k8s.io/apiserver-runtime/tools/apiserver-runtime-gen@v1.1.1
 	apiserver-runtime-gen \
  	--module open-cluster-management.io/cluster-proxy \
@@ -126,13 +112,21 @@ client-gen:
  	--versions=open-cluster-management.io/cluster-proxy/pkg/apis/proxy/v1alpha1
 
 images:
-	docker build \
+	$(CONTAINER_ENGINE) build \
 		-f cmd/Dockerfile \
 		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
 
 pure-image:
-	docker build \
+	$(CONTAINER_ENGINE) build \
+		-f cmd/pure.Dockerfile \
+		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
+
+pure-image-amd64:
+	$(CONTAINER_ENGINE) buildx build \
+		--platform linux/amd64 \
+		--load \
 		-f cmd/pure.Dockerfile \
 		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
@@ -147,7 +141,7 @@ test-integration: manifests generate fmt vet
 		go test ./test/integration/... -coverprofile cover.out
 
 e2e-job-image:
-	docker build \
+	$(CONTAINER_ENGINE) build \
 		-f test/e2e/job/Dockerfile \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME)-e2e-job:$(IMAGE_TAG) .
 
