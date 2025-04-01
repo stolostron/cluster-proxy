@@ -69,6 +69,7 @@ func main() {
 	var probeAddr string
 	var signerSecretNamespace, signerSecretName string
 	var enableKubeApiProxy bool
+	var agentInstallAll bool
 
 	logger := textlogger.NewLogger(textlogger.NewConfig())
 	klog.SetOutput(os.Stdout)
@@ -88,6 +89,10 @@ func main() {
 	flag.BoolVar(&enableKubeApiProxy, "enable-kube-api-proxy", true, "Enable proxy to agent kube-apiserver")
 	flag.StringVar(&config.DefaultAddonInstallNamespace, "agent-install-namespace", config.DefaultAddonInstallNamespace,
 		"The default namespace to install the addon agents.")
+	flag.BoolVar(
+		&agentInstallAll, "agent-install-all", false,
+		"Configure the install strategy of agent on managed clusters. "+
+			"Enabling this will automatically install agent on all managed cluster.")
 
 	flag.Parse()
 
