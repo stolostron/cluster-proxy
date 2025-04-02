@@ -310,6 +310,14 @@ func GetClusterProxyValueFunc(
 		servicesToExpose := removeDupAndSortServices(managedProxyServiceResolverToFilterServiceToExpose(serviceResolverList.Items, managedClusterSetMap, cluster.Name))
 
 		var aids []string
+
+		// Add service-proxy host as the default agentIdentifier.
+		// Using SHA256 to hash cluster.name to:
+		// 1. Generate consistent and unique host names
+		// 2. Keep host name length under DNS limit (max 64 chars)
+		serviceProxyHost := fmt.Sprintf("cluster-%x", sha256.Sum256([]byte(cluster.Name)))[:64-len("cluster-")] + ".open-cluster-management.proxy"
+		aids = append(aids, fmt.Sprintf("host=%s", serviceProxyHost))
+
 		namespace := config.DefaultAddonInstallNamespace
 		if len(addon.Status.Namespace) > 0 {
 			namespace = addon.Status.Namespace
@@ -354,6 +362,7 @@ func GetClusterProxyValueFunc(
 			"staticProxyAgentSecretKey":     keyDataBase64,
 			// support to access not only but also other services on managed cluster
 			"agentIdentifiers":       agentIdentifiers,
+			"serviceProxyHost":       serviceProxyHost,
 			"servicesToExpose":       servicesToExpose,
 			"enableKubeApiProxy":     enableKubeApiProxy,
 			"serviceProxySecretCert": base64.StdEncoding.EncodeToString(serviceProxySecretCert),
