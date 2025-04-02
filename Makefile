@@ -137,6 +137,14 @@ pure-image:
 		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
 
+pure-image-amd64:
+	docker buildx build \
+		--platform linux/amd64 \
+		--load \
+		-f cmd/pure.Dockerfile \
+		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
+
 ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
 test-integration: manifests generate fmt vet
 	mkdir -p ${ENVTEST_ASSETS_DIR}

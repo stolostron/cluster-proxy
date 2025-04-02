@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
 	"encoding/base64"
 	"encoding/json"
@@ -297,10 +298,22 @@ func GetClusterProxyValueFunc(
 		servicesToExpose := removeDupAndSortServices(managedProxyServiceResolverToFilterServiceToExpose(serviceResolverList.Items, managedClusterSetMap, cluster.Name))
 
 		var aids []string
+
+		// Add service-proxy host as the default agentIdentifier.
+		// Using SHA256 to hash cluster.name to:
+		// 1. Generate consistent and unique host names
+		// 2. Keep host name length under DNS limit (max 64 chars)
+		serviceProxyHost := fmt.Sprintf("cluster-%x", sha256.Sum256([]byte(cluster.Name)))[:64-len("cluster-")] + ".open-cluster-management.proxy"
+		aids = append(aids, fmt.Sprintf("host=%s", serviceProxyHost))
+
+		namespace := config.DefaultAddonInstallNamespace
+		if len(addon.Status.Namespace) > 0 {
+			namespace = addon.Status.Namespace
+		}
 		// add default kube-apiserver agentIdentifiers
 		if enableKubeApiProxy {
 			aids = append(aids, fmt.Sprintf("host=%s", cluster.Name))
-			aids = append(aids, fmt.Sprintf("host=%s.%s", cluster.Name, config.AddonInstallNamespace))
+			aids = append(aids, fmt.Sprintf("host=%s.%s", cluster.Name, namespace))
 		}
 		// add servicesToExpose into aids
 		for _, s := range servicesToExpose {
@@ -337,6 +350,7 @@ func GetClusterProxyValueFunc(
 			"staticProxyAgentSecretKey":     keyDataBase64,
 			// support to access not only but also other services on managed cluster
 			"agentIdentifiers":       agentIdentifiers,
+			"serviceProxyHost":       serviceProxyHost,
 			"servicesToExpose":       servicesToExpose,
 			"enableKubeApiProxy":     enableKubeApiProxy,
 			"serviceProxySecretCert": base64.StdEncoding.EncodeToString(serviceProxySecretCert),
