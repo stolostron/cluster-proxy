@@ -262,8 +262,8 @@ github.com/xeipuuv/gojsonreference
 # github.com/xeipuuv/gojsonschema v1.2.0
 ## explicit
 github.com/xeipuuv/gojsonschema
-# go.uber.org/atomic v1.7.0
-## explicit; go 1.13
+# go.uber.org/atomic v1.11.0
+## explicit; go 1.18
 go.uber.org/atomic
 # go.uber.org/multierr v1.6.0
 ## explicit; go 1.12
