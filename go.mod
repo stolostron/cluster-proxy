@@ -1,6 +1,8 @@
 module open-cluster-management.io/cluster-proxy
 
-go 1.18
+go 1.23
+
+toolchain go1.23.8
 
 require (
 	github.com/onsi/ginkgo v1.16.5
@@ -106,7 +108,7 @@ require (
 	k8s.io/apiserver v0.24.0 // indirect
 	k8s.io/component-base v0.24.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20220328201542-3ee0da9b0b42 // indirect
-	sigs.k8s.io/json v0.0.0-20211208200746-9f7c6b3444d2 // indirect
+	sigs.k8s.io/json v0.0.0-20241014173422-cfa47c3a1cc8 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.2.1 // indirect
 	sigs.k8s.io/yaml v1.3.0 // indirect
 )
