@@ -63,7 +63,7 @@ github.com/evanphx/json-patch
 # github.com/fatih/structs v1.1.0
 ## explicit
 github.com/fatih/structs
-# github.com/form3tech-oss/jwt-go v3.2.3+incompatible
+# github.com/form3tech-oss/jwt-go v3.2.5+incompatible
 ## explicit
 github.com/form3tech-oss/jwt-go
 # github.com/fsnotify/fsnotify v1.5.1
