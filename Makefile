@@ -67,7 +67,7 @@ test: manifests generate fmt vet ## Run tests.
 
 ##@ Build
 
-build: generate fmt vet
+build: 
 	go build -o bin/addon-manager cmd/addon-manager/main.go
 	go build -o bin/addon-agent cmd/addon-agent/main.go
 
@@ -133,6 +133,14 @@ images:
 
 pure-image:
 	docker build \
+		-f cmd/pure.Dockerfile \
+		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
+		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
+
+pure-image-amd64:
+	docker buildx build \
+		--platform linux/amd64 \
+		--load \
 		-f cmd/pure.Dockerfile \
 		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
