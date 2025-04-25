@@ -432,7 +432,8 @@ spec:
       optional: true
     - name: netrc
       optional: true
-  taskRunTemplate: {}
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-cluster-proxy-mce-27
   workspaces:
   - name: workspace
     volumeClaimTemplate:
