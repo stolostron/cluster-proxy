@@ -33,7 +33,7 @@ spec:
       - linux/ppc64le
       - linux/s390x
   - name: dockerfile
-    value: cmd/Dockerfile.rhtap
+    value: Dockerfile.rhtap
   - name: path-context
     value: .
   pipelineRef:
