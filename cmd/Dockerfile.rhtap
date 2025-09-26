@@ -14,6 +14,7 @@ FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
 ENV USER_UID=10001
 
 LABEL \
+      url="https://github.com/stolostron/cluster-proxy" \
     name="cluster-proxy" \
     com.redhat.component="cluster-proxy" \
     description="A pluggable addon for OCM that enables proxy tunnels between hub and managed clusters using apiserver-network-proxy" \
