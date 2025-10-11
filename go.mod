@@ -101,3 +101,9 @@ require (
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.1 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
+
+// CVE-2024-24786: Force protobuf packages to safe versions to fix security vulnerability
+replace (
+	github.com/golang/protobuf => github.com/golang/protobuf v1.5.4
+	google.golang.org/protobuf => google.golang.org/protobuf v1.33.0
+)
