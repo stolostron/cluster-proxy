@@ -129,7 +129,7 @@ spec:
             - --ocpservice-ca=/ocpservice-ca/service-ca.crt
             - --cert=/server-cert/tls.crt
             - --key=/server-cert/tls.key
-          livenessProbe:
+          livesnessProbe:
             httpGet:
               path: /healthz
               port: 8000
