@@ -50,6 +50,7 @@ func RegisterClusterManagementAddonReconciler(
 	nativeClient kubernetes.Interface,
 	secretInformer informercorev1.SecretInformer,
 	supportsV1CSR bool,
+	imagePullPolicy string,
 ) error {
 	r := &ManagedProxyConfigurationReconciler{
 		Client:     mgr.GetClient(),
@@ -71,7 +72,8 @@ func RegisterClusterManagementAddonReconciler(
 		DeploymentGetter: nativeClient.AppsV1(),
 		EventRecorder:    events.NewInMemoryRecorder("ClusterManagementAddonReconciler"),
 
-		supportsV1CSR: supportsV1CSR,
+		supportsV1CSR:   supportsV1CSR,
+		imagePullPolicy: imagePullPolicy,
 	}
 	return r.SetupWithManager(mgr)
 }
@@ -88,6 +90,7 @@ type ManagedProxyConfigurationReconciler struct {
 
 	newCertRotatorFunc func(namespace, name string, sans ...string) selfsigned.CertRotation
 	supportsV1CSR      bool
+	imagePullPolicy    string
 }
 
 func (c *ManagedProxyConfigurationReconciler) SetupWithManager(mgr ctrl.Manager) error {
@@ -167,7 +170,7 @@ func (c *ManagedProxyConfigurationReconciler) deployProxyServer(config *proxyv1a
 		newServiceAccount(config),
 		newProxyService(config),
 		newProxySecret(config, c.SelfSigner.CAData()),
-		newProxyServerDeployment(config),
+		newProxyServerDeployment(config, c.imagePullPolicy),
 		newProxyServerRole(config),
 		newProxyServerRoleBinding(config),
 	}
@@ -385,11 +388,14 @@ func (c *ManagedProxyConfigurationReconciler) ensureRotation(config *proxyv1alph
 		hostNames,
 		"127.0.0.1",
 		"localhost",
-		entrypoint,
 		config.Spec.ProxyServer.InClusterServiceName+"."+config.Spec.ProxyServer.Namespace,
 		config.Spec.ProxyServer.InClusterServiceName+"."+config.Spec.ProxyServer.Namespace+".svc")
 	if config.Spec.ProxyServer.Entrypoint != nil && config.Spec.ProxyServer.Entrypoint.Type == proxyv1alpha1.EntryPointTypeHostname {
 		sans = append(sans, config.Spec.ProxyServer.Entrypoint.Hostname.Value)
+	}
+
+	if len(entrypoint) > 0 {
+		sans = append(sans, entrypoint)
 	}
 
 	tweakClientCertUsageFunc := func(cert *x509.Certificate) error {

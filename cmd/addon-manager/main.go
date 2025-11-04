@@ -26,6 +26,7 @@ import (
 
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/informers"
@@ -34,7 +35,6 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/textlogger"
 	"open-cluster-management.io/addon-framework/pkg/addonmanager"
-	addonutil "open-cluster-management.io/addon-framework/pkg/utils"
 	addonv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
 	addonclient "open-cluster-management.io/api/client/addon/clientset/versioned"
 	clusterv1beta2 "open-cluster-management.io/api/cluster/v1beta2"
@@ -69,6 +69,7 @@ func main() {
 	var probeAddr string
 	var signerSecretNamespace, signerSecretName string
 	var enableKubeApiProxy bool
+	var imagePullPolicy string
 
 	logger := textlogger.NewLogger(textlogger.NewConfig())
 	klog.SetOutput(os.Stdout)
@@ -88,6 +89,7 @@ func main() {
 	flag.BoolVar(&enableKubeApiProxy, "enable-kube-api-proxy", true, "Enable proxy to agent kube-apiserver")
 	flag.StringVar(&config.DefaultAddonInstallNamespace, "agent-install-namespace", config.DefaultAddonInstallNamespace,
 		"The default namespace to install the addon agents.")
+	flag.StringVar(&imagePullPolicy, "image-pull-policy", string(corev1.PullIfNotPresent), "The image pull policy for the addon manager")
 
 	flag.Parse()
 
@@ -118,20 +120,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	supportsV1CSR, supportsV1beta1CSR, err := addonutil.IsCSRSupported(nativeClient)
-	if err != nil {
-		setupLog.Error(err, "unable to detect available CSR API versions")
-		os.Exit(1)
-	}
-
-	if supportsV1CSR {
-		setupLog.Info("V1 CSR API found")
-	} else if supportsV1beta1CSR {
-		setupLog.Info("V1 CSR API not found, falling back to v1beta1")
-	} else {
-		setupLog.Error(err, "No supported CSR api found")
-		os.Exit(1)
-	}
+	// supportsV1CSR, supportsV1beta1CSR, err := addonutil.IsCSRSupported(nativeClient)
+	// if err != nil {
+	// 	setupLog.Error(err, "unable to detect available CSR API versions")
+	// 	os.Exit(1)
+	// }
+	// TODO: @xuezhaojun, in latest kuberentes env, IsCSRSupported returns err msg:
+	// E1103 08:21:48.201750 1 memcache.go:265] "Unhandled Error" err="couldn't get current server API group list: the server has asked for the client to provide credentials" logger="UnhandledError"
+	// E1103 08:21:48.201789 1 main.go:123] "unable to detect available CSR API versions" err="the server has asked for the client to provide credentials" logger="setup"
+	// so we change to use supportsV1CSR = true and supportsV1beta1CSR = false
+	supportsV1CSR := true
 
 	nativeInformer := informers.NewSharedInformerFactoryWithOptions(nativeClient, 0)
 
@@ -149,6 +147,7 @@ func main() {
 		nativeClient,
 		nativeInformer.Core().V1().Secrets(),
 		supportsV1CSR,
+		imagePullPolicy,
 	); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterManagementAddonReconciler")
 		os.Exit(1)

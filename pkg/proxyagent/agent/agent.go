@@ -129,6 +129,34 @@ func NewAgentAddon(
 						},
 					},
 				}).
+				WithStaticClusterRole(&rbacv1.ClusterRole{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "cluster-proxy-addon-agent-tokenreview",
+					},
+					Rules: []rbacv1.PolicyRule{
+						{
+							APIGroups: []string{"authentication.k8s.io"},
+							Verbs:     []string{"create"},
+							Resources: []string{"tokenreviews"},
+						},
+					},
+				}).
+				WithStaticClusterRoleBinding(&rbacv1.ClusterRoleBinding{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "cluster-proxy-addon-agent-tokenreview",
+					},
+					RoleRef: rbacv1.RoleRef{
+						Kind: "ClusterRole",
+						Name: "cluster-proxy-addon-agent-tokenreview",
+					},
+					Subjects: []rbacv1.Subject{
+						{
+							Kind:     rbacv1.GroupKind,
+							Name:     common.SubjectGroupClusterProxy,
+							APIGroup: rbacv1.GroupName,
+						},
+					},
+				}).
 				Build(),
 			CSRSign: CustomSignerWithExpiry(ProxyAgentSignerName, caKeyData, caCertData, time.Hour*24*180),
 		}).
@@ -142,6 +170,7 @@ func NewAgentAddon(
 		).
 		WithGetValuesFuncs(
 			GetClusterProxyValueFunc(runtimeClient, nativeClient, signerNamespace, caCertData, v1CSRSupported, enableKubeApiProxy),
+			GetClusterProxyValueStolostronFunc(runtimeClient, nativeClient, signerNamespace),
 			addonfactory.GetAddOnDeploymentConfigValues(
 				utils.NewAddOnDeploymentConfigGetter(addonClient),
 				toAgentAddOnChartValues(caCertData),
@@ -250,6 +279,12 @@ func GetClusterProxyValueFunc(
 			return nil, err
 		}
 
+		// get agent namespace from addon status
+		namespace := config.DefaultAddonInstallNamespace
+		if len(addon.Status.Namespace) > 0 {
+			namespace = addon.Status.Namespace
+		}
+
 		// Get agentIndentifiers and servicesToExpose.
 		// agetnIdentifiers is used in `--agent-identifiers` flag in addon-agent-deployment.yaml.
 		// servicesToExpose defines the services we want to expose to the hub.
@@ -276,13 +311,15 @@ func GetClusterProxyValueFunc(
 		servicesToExpose := removeDupAndSortServices(managedProxyServiceResolverToFilterServiceToExpose(serviceResolverList.Items, managedClusterSetMap, cluster.Name))
 
 		var aids []string
-		// add default kube-apiserver agentIdentifiers
 
-		// get agent namespace from addon status
-		namespace := config.DefaultAddonInstallNamespace
-		if len(addon.Status.Namespace) > 0 {
-			namespace = addon.Status.Namespace
-		}
+		// Add service-proxy host as the default agentIdentifier.
+		// Using SHA256 to hash cluster.name to:
+		// 1. Generate consistent and unique host names
+		// 2. Keep host name length under DNS limit (max 64 chars)
+		serviceProxyHost := fmt.Sprintf("cluster-%x", sha256.Sum256([]byte(cluster.Name)))[:64-len("cluster-")] + ".open-cluster-management.proxy"
+		aids = append(aids, fmt.Sprintf("host=%s", serviceProxyHost))
+
+		// add default kube-apiserver agentIdentifiers
 		if enableKubeApiProxy {
 			aids = append(aids, fmt.Sprintf("host=%s", cluster.Name))
 			aids = append(aids, fmt.Sprintf("host=%s.%s", cluster.Name, namespace))
@@ -316,6 +353,7 @@ func GetClusterProxyValueFunc(
 			"staticProxyAgentSecretKey":     keyDataBase64,
 			// support to access not only but also other services on managed cluster
 			"agentIdentifiers":   agentIdentifiers,
+			"serviceProxyHost":   serviceProxyHost,
 			"servicesToExpose":   servicesToExpose,
 			"enableKubeApiProxy": enableKubeApiProxy,
 		}, nil

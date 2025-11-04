@@ -439,7 +439,7 @@ func TestAgentAddonRegistrationOption(t *testing.T) {
 			err = options.Registration.PermissionConfig(c.cluster, c.addon)
 			assert.NoError(t, err)
 			actions := fakeKubeClient.Actions()
-			assert.Len(t, actions, 4)
+			assert.Len(t, actions, 8)
 			role := actions[1].(clienttesting.CreateAction).GetObject().(*rbacv1.Role)
 			assert.Equal(t, "cluster-proxy-addon-agent", role.Name)
 			rolebinding := actions[3].(clienttesting.CreateAction).GetObject().(*rbacv1.RoleBinding)
@@ -466,6 +466,9 @@ func TestNewAgentAddon(t *testing.T) {
 		clusterName,                 // cluster service
 		addOnName,                   // namespace
 		"cluster-proxy",             // service account
+		"cluster-proxy-service-proxy-server-certificates",
+		"cluster-proxy-addon-agent-impersonator",                                       // clusterrole for impersonation
+		"cluster-proxy-addon-agent-impersonator:open-cluster-management-cluster-proxy", // clusterrolebinding for impersonation
 	}
 
 	expectedManifestNamesWithoutClusterService := []string{
@@ -475,6 +478,9 @@ func TestNewAgentAddon(t *testing.T) {
 		"cluster-proxy-ca",          // ca
 		addOnName,                   // namespace
 		"cluster-proxy",             // service account
+		"cluster-proxy-service-proxy-server-certificates",
+		"cluster-proxy-addon-agent-impersonator",                                       // clusterrole for impersonation
+		"cluster-proxy-addon-agent-impersonator:open-cluster-management-cluster-proxy", // clusterrolebinding for impersonation
 	}
 
 	cases := []struct {
@@ -696,7 +702,7 @@ func TestNewAgentAddon(t *testing.T) {
 			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
 				assert.Len(t, manifests, len(expectedManifestNames))
 				assert.ElementsMatch(t, expectedManifestNames, manifestNames(manifests))
-				externalNameService := getKubeAPIServerExternalNameService(manifests)
+				externalNameService := getKubeAPIServerExternalNameService(manifests, clusterName)
 				assert.NotNil(t, externalNameService)
 				assert.Equal(t, "kubernetes.default.svc.test.com", externalNameService.Spec.ExternalName)
 			},
@@ -815,6 +821,7 @@ func TestNewAgentAddon(t *testing.T) {
 				newexpectedManifestNames := []string{}
 				newexpectedManifestNames = append(newexpectedManifestNames, expectedManifestNames...)
 				newexpectedManifestNames[5] = "addon-test"
+				newexpectedManifestNames[9] = "cluster-proxy-addon-agent-impersonator:addon-test" // clusterrolebinding
 				assert.ElementsMatch(t, newexpectedManifestNames, manifestNames(manifests))
 			},
 		},
@@ -870,7 +877,7 @@ func TestNewAgentAddon(t *testing.T) {
 			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
 				assert.Len(t, manifests, len(expectedManifestNames))
 				assert.ElementsMatch(t, expectedManifestNames, manifestNames(manifests))
-				externalNameService := getKubeAPIServerExternalNameService(manifests)
+				externalNameService := getKubeAPIServerExternalNameService(manifests, clusterName)
 				assert.NotNil(t, externalNameService)
 				assert.Equal(t, "kubernetes.default.svc.test.com", externalNameService.Spec.ExternalName)
 			},
@@ -929,6 +936,18 @@ func TestNewAgentAddon(t *testing.T) {
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			// add service-proxy secret into kubeObjects
+			c.kubeObjs = append(c.kubeObjs, &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cluster-proxy-service-proxy-server-cert",
+					Namespace: "test",
+				},
+				Data: map[string][]byte{
+					"tls.crt": []byte("testcrt"),
+					"tls.key": []byte("testkey"),
+				},
+			})
+
 			fakeKubeClient := fakekube.NewSimpleClientset(c.kubeObjs...)
 			var fakeRuntimeClient runtimeclient.Client
 			if c.managedProxyConfig == nil {
@@ -955,7 +974,6 @@ func TestNewAgentAddon(t *testing.T) {
 				return
 			}
 			assert.NoError(t, err)
-
 			c.verifyManifests(t, manifests)
 		})
 	}
@@ -1272,11 +1290,14 @@ func getAgentDeployment(manifests []runtime.Object) *appsv1.Deployment {
 	return nil
 }
 
-func getKubeAPIServerExternalNameService(manifests []runtime.Object) *corev1.Service {
+func getKubeAPIServerExternalNameService(manifests []runtime.Object, clusterName string) *corev1.Service {
 	for _, manifest := range manifests {
 		switch obj := manifest.(type) {
 		case *corev1.Service:
-			return obj
+			// As the cluster-service.yaml shows, the service name is cluster name.
+			if obj.Name == clusterName {
+				return obj
+			}
 		}
 	}
 
