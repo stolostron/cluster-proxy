@@ -133,7 +133,7 @@ spec:
         runAfter:
           - init
         taskRef:
-          bundle: quay.io/redhat-appstudio-tekton-catalog/task-git-clone:0.1@sha256:dea9911dc973ea13b2ecec728d34adf0fa41f70da2f5b0a5c829c400ef272c9b
+          bundle: quay.io/redhat-appstudio-tekton-catalog/task-git-clone:0.1@sha256:48786356401d3d328fc353ade4d6fa4a4b6dd0cff765d53d0bb2e46886bc87cf
           name: git-clone
         when:
           - input: $(tasks.init.results.build)
@@ -181,7 +181,7 @@ spec:
         runAfter:
           - prefetch-dependencies
         taskRef:
-          bundle: quay.io/redhat-appstudio-tekton-catalog/task-buildah:0.6@sha256:47b9e7795327ce5009fc88eb3925c918e4d6c0fe411ba63f85ec652cde4607e0
+          bundle: quay.io/redhat-appstudio-tekton-catalog/task-buildah:0.6@sha256:c6b177f9dbe9d1b439ed8d1349838956bb83bf7dc8479393c83339437326eb53
           name: buildah
         when:
           - input: $(tasks.init.results.build)
