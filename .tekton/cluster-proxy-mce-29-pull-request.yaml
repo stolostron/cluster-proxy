@@ -45,7 +45,8 @@ spec:
       value: main
     - name: pathInRepo
       value: pipelines/common_mce_2.9.yaml
-  taskRunTemplate: {}
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-cluster-proxy-mce-29
   workspaces:
   - name: git-auth
     secret:
