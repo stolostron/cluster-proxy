@@ -48,9 +48,9 @@ func TestEnsureSecretRotation(t *testing.T) {
 	assert.Equal(t, []string{
 		"127.0.0.1",
 		"localhost",
-		"foo",
 		"tik.bar",
 		"tik.bar.svc",
+		"foo",
 		"example.com",
 	}, receivingSANs)
 }
