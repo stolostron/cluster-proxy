@@ -385,9 +385,11 @@ func (c *ManagedProxyConfigurationReconciler) ensureRotation(config *proxyv1alph
 		hostNames,
 		"127.0.0.1",
 		"localhost",
-		entrypoint,
 		config.Spec.ProxyServer.InClusterServiceName+"."+config.Spec.ProxyServer.Namespace,
 		config.Spec.ProxyServer.InClusterServiceName+"."+config.Spec.ProxyServer.Namespace+".svc")
+	if entrypoint != "" {
+		sans = append(sans, entrypoint)
+	}
 	if config.Spec.ProxyServer.Entrypoint != nil && config.Spec.ProxyServer.Entrypoint.Type == proxyv1alpha1.EntryPointTypeHostname {
 		sans = append(sans, config.Spec.ProxyServer.Entrypoint.Hostname.Value)
 	}
