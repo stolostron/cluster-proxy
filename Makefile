@@ -20,10 +20,11 @@ GOBIN=$(shell go env GOBIN)
 endif
 
 # Setting SHELL to bash allows bash commands to be executed by recipes.
-# This is a requirement for 'setup-envtest.sh' in the test target.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
 .SHELLFLAGS = -ec
+
+ENSURE_ENVTEST_SCRIPT := https://raw.githubusercontent.com/open-cluster-management-io/sdk-go/main/ci/envtest/ensure-envtest.sh
 
 all: build
 
@@ -62,7 +63,7 @@ vet: ## Run go vet against code.
 
 verify: fmt vet
 
-test: manifests generate fmt vet ## Run tests.
+test: manifests generate fmt vet envtest-setup ## Run tests.
 	go test ./pkg/... -coverprofile cover.out
 
 ##@ Build
@@ -126,16 +127,17 @@ images-amd64:
 		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .
 
+## EnvTest Setup
+
+.PHONY: envtest-setup
+envtest-setup:
+	$(eval export KUBEBUILDER_ASSETS=$(shell curl -fsSL $(ENSURE_ENVTEST_SCRIPT) | bash))
+	@echo "KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS)"
+
 ## Integration Testing
 
-ENVTEST_ASSETS_DIR=$(shell pwd)/testbin
-test-integration: manifests generate fmt vet
-	mkdir -p ${ENVTEST_ASSETS_DIR}
-	test -f ${ENVTEST_ASSETS_DIR}/setup-envtest.sh || curl -sSLo ${ENVTEST_ASSETS_DIR}/setup-envtest.sh https://raw.githubusercontent.com/kubernetes-sigs/controller-runtime/v0.8.3/hack/setup-envtest.sh
-	source ${ENVTEST_ASSETS_DIR}/setup-envtest.sh; \
-		fetch_envtest_tools $(ENVTEST_ASSETS_DIR); \
-		setup_envtest_env $(ENVTEST_ASSETS_DIR); \
-		go test ./test/integration/... -coverprofile cover.out
+test-integration: manifests generate fmt vet envtest-setup
+	go test ./test/integration/... -coverprofile cover.out
 
 ## E2E Testing
 
