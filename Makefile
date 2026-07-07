@@ -5,6 +5,7 @@ IMAGE_NAME = cluster-proxy
 IMAGE_TAG ?= latest
 E2E_TEST_CLUSTER_NAME ?= e2e
 CONTAINER_ENGINE ?= docker
+HELM ?= helm
 # Produce CRDs that work back to Kubernetes 1.11 (no version conversion)
 CRD_OPTIONS ?= "crd:crdVersions={v1},allowDangerousTypes=true,generateEmbeddedObjectMeta=true"
 
@@ -72,8 +73,33 @@ envtest-setup:
 	$(eval export KUBEBUILDER_ASSETS=$(shell curl -fsSL $(ENSURE_ENVTEST_SCRIPT) | bash))
 	@echo "KUBEBUILDER_ASSETS=$(KUBEBUILDER_ASSETS)"
 
+.PHONY: sync-helm-dependencies
+sync-helm-dependencies: ## Sync local Helm chart dependencies into charts/ directories.
+	./hack/sync-helm-dependencies.sh
+
+.PHONY: verify-helm-dependencies
+verify-helm-dependencies: ## Verify Helm chart dependencies are committed and current.
+	./hack/verify-helm-dependencies.sh
+
 test: manifests generate fmt vet envtest-setup ## Run tests.
 	go test ./pkg/... -coverprofile cover.out
+
+.PHONY: test-helm
+test-helm: verify-helm-dependencies ## Lint and render Helm charts.
+	$(HELM) lint charts/cluster-proxy
+	$(HELM) template cluster-proxy charts/cluster-proxy \
+		--namespace open-cluster-management-addon >/dev/null
+	$(HELM) template cluster-proxy charts/cluster-proxy \
+		--namespace open-cluster-management-addon \
+		--set enableServiceProxy=true >/dev/null
+	$(HELM) lint pkg/proxyagent/agent/manifests/charts/addon-agent
+	$(HELM) template addon-agent pkg/proxyagent/agent/manifests/charts/addon-agent \
+		--namespace open-cluster-management-agent-addon >/dev/null
+	$(HELM) template addon-agent pkg/proxyagent/agent/manifests/charts/addon-agent \
+		--namespace open-cluster-management-agent-addon \
+		--set enableServiceProxy=true \
+		--set serviceProxySecretCert=dGVzdA== \
+		--set serviceProxySecretKey=dGVzdA== >/dev/null
 
 ##@ Build
 
@@ -124,6 +150,7 @@ client-gen:
 
 images:
 	$(CONTAINER_ENGINE) build \
+		$(IMAGE_BUILD_EXTRA_FLAGS) \
 		-f cmd/Dockerfile \
 		--build-arg ADDON_AGENT_IMAGE_NAME=$(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) \
 		-t $(IMAGE_REGISTRY_NAME)/$(IMAGE_NAME):$(IMAGE_TAG) .

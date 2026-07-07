@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/ptr"
 
 	proxyv1alpha1 "open-cluster-management.io/cluster-proxy/pkg/apis/proxy/v1alpha1"
 	sdktls "open-cluster-management.io/sdk-go/pkg/tls"
@@ -79,6 +81,23 @@ func TestProxyServerArgs_WithAdditionalArgsAndCipherSuites(t *testing.T) {
 	assert.Equal(t, expected, args)
 }
 
+func TestNewProxyServerDeployment_SetsPodSecurityContext(t *testing.T) {
+	config := newTestConfig(3)
+	config.Name = "cluster-proxy"
+	config.Spec.ProxyServer.Namespace = "test"
+	config.Spec.ProxyServer.Image = "quay.io/open-cluster-management/cluster-proxy:test"
+
+	deploy := newProxyServerDeployment(config, "IfNotPresent", nil)
+
+	expected := &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+	assert.Equal(t, expected, deploy.Spec.Template.Spec.SecurityContext)
+}
+
 func TestTLSConfigHash_Nil(t *testing.T) {
 	assert.Equal(t, "", tlsConfigHash(nil))
 }
@@ -111,4 +130,49 @@ func TestTLSConfigHash_EmptyConfig(t *testing.T) {
 	hash := tlsConfigHash(&sdktls.TLSConfig{})
 	assert.NotEmpty(t, hash)
 	assert.Len(t, hash, 16)
+}
+
+func TestProxyServerArgs_WithMinVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		minVersion uint16
+		expected   string
+	}{
+		{
+			name:       "TLS12",
+			minVersion: tls.VersionTLS12,
+			expected:   "--tls-min-version=VersionTLS12",
+		},
+		{
+			name:       "TLS13",
+			minVersion: tls.VersionTLS13,
+			expected:   "--tls-min-version=VersionTLS13",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tlsConfig := &sdktls.TLSConfig{
+				MinVersion: tt.minVersion,
+			}
+			args := proxyServerArgs(newTestConfig(3), tlsConfig)
+
+			expected := append(append([]string{}, baseArgs...), tt.expected)
+			assert.Equal(t, expected, args)
+		})
+	}
+}
+
+func TestProxyServerArgs_WithMinVersionAndCipherSuites(t *testing.T) {
+	tlsConfig := &sdktls.TLSConfig{
+		CipherSuites: []uint16{tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256},
+		MinVersion:   tls.VersionTLS13,
+	}
+	args := proxyServerArgs(newTestConfig(3), tlsConfig)
+
+	expected := append(append([]string{}, baseArgs...),
+		"--cipher-suites="+sdktls.CipherSuitesToString(tlsConfig.CipherSuites),
+		"--tls-min-version="+sdktls.VersionToString(tlsConfig.MinVersion),
+	)
+	assert.Equal(t, expected, args)
 }
