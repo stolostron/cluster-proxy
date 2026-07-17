@@ -118,6 +118,12 @@ func newProxyServerDeployment(config *proxyv1alpha1.ManagedProxyConfiguration, i
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: common.AddonName,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: ptr.To(true),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
 					Containers: []corev1.Container{
 						{
 							Name:            common.ComponentNameProxyServer,
@@ -126,8 +132,8 @@ func newProxyServerDeployment(config *proxyv1alpha1.ManagedProxyConfiguration, i
 							Command: []string{
 								"/proxy-server",
 							},
-							// TODO(ocm#1447): Inject --tls-min-version from the ocm-tls-profile
-							// ConfigMap once anp-server supports the flag (upstream PR needed).
+							// TLS configuration from ocm-tls-profile ConfigMap is injected
+							// via proxyServerArgs (both --cipher-suites and --tls-min-version)
 							Args: proxyServerArgs(config, tlsConfig),
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
@@ -250,10 +256,9 @@ func proxyServerArgs(config *proxyv1alpha1.ManagedProxyConfiguration, tlsConfig 
 			args = append(args, "--cipher-suites="+sdktls.CipherSuitesToString(tlsConfig.CipherSuites))
 		}
 
-		// Uncomment once --tls-min-version is supported by the apiserver-network-proxy
-		//if tlsConfig.MinVersion != 0 {
-		//	args = append(args, "--tls-min-version="+sdktls.VersionToString(tlsConfig.MinVersion))
-		//}
+		if tlsConfig.MinVersion != 0 {
+			args = append(args, "--tls-min-version="+sdktls.VersionToString(tlsConfig.MinVersion))
+		}
 	}
 
 	return args

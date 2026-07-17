@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -28,16 +29,18 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/util/cert"
+	"k8s.io/utils/ptr"
 
 	openshiftcrypto "github.com/openshift/library-go/pkg/crypto"
 	"github.com/stretchr/testify/assert"
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 	fakeruntime "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	addonv1alpha1 "open-cluster-management.io/api/addon/v1alpha1"
+	addonv1beta1 "open-cluster-management.io/api/addon/v1beta1"
 	fakeaddon "open-cluster-management.io/api/client/addon/clientset/versioned/fake"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	proxyv1alpha1 "open-cluster-management.io/cluster-proxy/pkg/apis/proxy/v1alpha1"
+	"open-cluster-management.io/cluster-proxy/pkg/constant"
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/authentication/selfsigned"
 )
 
@@ -48,8 +51,8 @@ var (
 )
 
 func init() {
-	testscheme.AddKnownTypes(proxyv1alpha1.SchemeGroupVersion, &proxyv1alpha1.ManagedProxyConfiguration{})
-	testscheme.AddKnownTypes(addonv1alpha1.SchemeGroupVersion, &addonv1alpha1.AddOnDeploymentConfig{})
+	_ = proxyv1alpha1.AddToScheme(testscheme)
+	_ = addonv1beta1.Install(testscheme)
 }
 
 func TestRemoveDupAndSortservicesToExpose(t *testing.T) {
@@ -107,7 +110,7 @@ func TestAgentAddonRegistrationOption(t *testing.T) {
 		name               string
 		signerName         string
 		cluster            *clusterv1.ManagedCluster
-		addon              *addonv1alpha1.ManagedClusterAddOn
+		addon              *addonv1beta1.ManagedClusterAddOn
 		expextedCSRConfigs int
 		expectedCSRApprove bool
 		expectedSignedCSR  bool
@@ -152,17 +155,17 @@ func TestAgentAddonRegistrationOption(t *testing.T) {
 
 			options := agentAddOn.GetAgentAddonOptions()
 
-			csrConfigs, err := options.Registration.CSRConfigurations(c.cluster, nil)
+			csrConfigs, err := options.Registration.Configurations(context.TODO(), c.cluster, nil)
 			assert.NoError(t, err)
 			assert.Len(t, csrConfigs, c.expextedCSRConfigs)
 
-			csrApprove := options.Registration.CSRApproveCheck(c.cluster, nil, nil)
+			csrApprove := options.Registration.CSRApproveCheck(context.TODO(), c.cluster, nil, nil)
 			assert.Equal(t, c.expectedCSRApprove, csrApprove)
 			if csrApprove != c.expectedCSRApprove {
 				t.Errorf("expect csr approve is %v, but %v", c.expectedCSRApprove, csrApprove)
 			}
 
-			err = options.Registration.PermissionConfig(c.cluster, c.addon)
+			err = options.Registration.PermissionConfig(context.TODO(), c.cluster, c.addon)
 			assert.NoError(t, err)
 			actions := fakeKubeClient.Actions()
 			assert.Len(t, actions, 8)
@@ -231,7 +234,7 @@ func TestAgentAddonRegistrationOption(t *testing.T) {
 			}, clusterRoleBinding.RoleRef)
 			assert.NotEmpty(t, clusterRoleBinding.Subjects)
 
-			cert, err := options.Registration.CSRSign(nil, nil, newCSR(c.signerName))
+			cert, err := options.Registration.CSRSign(context.TODO(), nil, nil, newCSR(c.signerName))
 			assert.NoError(t, err)
 			assert.Equal(t, c.expectedSignedCSR, (len(cert) != 0))
 		})
@@ -268,14 +271,18 @@ func TestNewAgentAddon(t *testing.T) {
 		"cluster-proxy-addon-agent-impersonator:open-cluster-management-cluster-proxy", // clusterrolebinding for impersonation
 	}
 
+	expectedManifestNamesWithServiceProxy := append([]string{}, expectedManifestNames...)
+	expectedManifestNamesWithServiceProxy = append(expectedManifestNamesWithServiceProxy, "cluster-proxy-service-proxy-server-certificates")
+
 	cases := []struct {
 		name                    string
 		cluster                 *clusterv1.ManagedCluster
-		addon                   *addonv1alpha1.ManagedClusterAddOn
+		addon                   *addonv1beta1.ManagedClusterAddOn
 		managedProxyConfig      runtimeclient.Object
 		addOndDeploymentConfigs []runtime.Object
 		kubeObjs                []runtime.Object
 		enableKubeApiProxy      bool
+		enableServiceProxy      bool
 		expectedErrorMsg        string
 		verifyManifests         func(t *testing.T, manifests []runtime.Object)
 	}{
@@ -290,9 +297,9 @@ func TestNewAgentAddon(t *testing.T) {
 		},
 		{
 			name: "no managed proxy configuration",
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{newManagedProxyConfigReference("none")}
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{newManagedProxyConfigReference("none")}
 				return addOn
 			}(),
 			addOndDeploymentConfigs: []runtime.Object{},
@@ -303,9 +310,9 @@ func TestNewAgentAddon(t *testing.T) {
 		},
 		{
 			name: "no load balancer service",
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
 				return addOn
 			}(),
 			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypeLoadBalancerService),
@@ -317,9 +324,9 @@ func TestNewAgentAddon(t *testing.T) {
 		},
 		{
 			name: "balancer service not ready",
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
 				return addOn
 			}(),
 			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypeLoadBalancerService),
@@ -332,9 +339,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "balancer service proxy server",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
 				return addOn
 			}(),
 			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypeLoadBalancerService),
@@ -352,9 +359,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "hostname proxy server ",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
 				return addOn
 			}(),
 			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypeHostname),
@@ -372,9 +379,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "customized proxy-agent replicas",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
 				return addOn
 			}(),
 			managedProxyConfig:      setProxyAgentReplicas(newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypeHostname), 2),
@@ -392,9 +399,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "port forward proxy server",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
 				return addOn
 			}(),
 			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
@@ -410,11 +417,37 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
+			name:    "port forward proxy server with service proxy",
+			cluster: newCluster(clusterName, true),
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
+				addOn := newAddOn(addOnName, clusterName)
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{newManagedProxyConfigReference(managedProxyConfigName)}
+				return addOn
+			}(),
+			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{},
+			kubeObjs:                []runtime.Object{},
+			enableKubeApiProxy:      true,
+			enableServiceProxy:      true,
+			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
+				assert.Len(t, manifests, len(expectedManifestNamesWithServiceProxy))
+				assert.ElementsMatch(t, expectedManifestNamesWithServiceProxy, manifestNames(manifests))
+				agentDeploy := getAgentDeployment(manifests)
+				assert.NotNil(t, agentDeploy)
+				serviceProxy := getDeploymentContainer(agentDeploy, "service-proxy")
+				if assert.NotNil(t, serviceProxy) &&
+					assert.NotNil(t, serviceProxy.ReadinessProbe) &&
+					assert.NotNil(t, serviceProxy.ReadinessProbe.TCPSocket) {
+					assert.Equal(t, int32(constant.ServiceProxyPort), serviceProxy.ReadinessProbe.TCPSocket.Port.IntVal)
+				}
+			},
+		},
+		{
 			name:    "with addon deployment config",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -448,9 +481,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "with addon deployment config using a customized serviceDomain",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -470,9 +503,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "enable-kube-api-proxy is false",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -490,9 +523,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "with addon deployment config including https proxy config",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -523,9 +556,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "with addon deployment config including http proxy config",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -556,9 +589,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "with addon deployment config including install namespace",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -566,7 +599,7 @@ func TestNewAgentAddon(t *testing.T) {
 			}(),
 			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
 			addOndDeploymentConfigs: []runtime.Object{
-				func() *addonv1alpha1.AddOnDeploymentConfig {
+				func() *addonv1beta1.AddOnDeploymentConfig {
 					config := newAddOnDeploymentConfig(addOndDeployConfigName, clusterName)
 					config.Spec.AgentInstallNamespace = "addon-test"
 					return config
@@ -584,9 +617,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "with addon deployment config using customized variables",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -594,9 +627,9 @@ func TestNewAgentAddon(t *testing.T) {
 			}(),
 			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
 			addOndDeploymentConfigs: []runtime.Object{
-				func() *addonv1alpha1.AddOnDeploymentConfig {
+				func() *addonv1beta1.AddOnDeploymentConfig {
 					config := newAddOnDeploymentConfig(addOndDeployConfigName, clusterName)
-					config.Spec.CustomizedVariables = []addonv1alpha1.CustomizedVariable{
+					config.Spec.CustomizedVariables = []addonv1beta1.CustomizedVariable{
 						{
 							Name:  "replicas",
 							Value: "10",
@@ -617,9 +650,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "with addon deployment config using a customized serviceDomain",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -639,9 +672,9 @@ func TestNewAgentAddon(t *testing.T) {
 		{
 			name:    "with addon deployment config using resources requirement",
 			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1alpha1.ManagedClusterAddOn {
+			addon: func() *addonv1beta1.ManagedClusterAddOn {
 				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1alpha1.ConfigReference{
+				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
 					newManagedProxyConfigReference(managedProxyConfigName),
 					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
 				}
@@ -716,20 +749,36 @@ func TestNewAgentAddon(t *testing.T) {
 				fakeRuntimeClient,
 				fakeKubeClient,
 				c.enableKubeApiProxy,
-				false, // enableServiceProxy
+				c.enableServiceProxy,
 				fakeAddonClient,
 			)
 			assert.NoError(t, err)
 
-			manifests, err := agentAddOn.Manifests(c.cluster, c.addon.DeepCopy())
+			manifests, err := agentAddOn.Manifests(context.TODO(), c.cluster, c.addon.DeepCopy())
 			if c.expectedErrorMsg != "" {
 				assert.ErrorContains(t, err, c.expectedErrorMsg)
 				return
 			}
 			assert.NoError(t, err)
+			assertPodSecurityContext(t, getAgentDeployment(manifests))
 			c.verifyManifests(t, manifests)
 		})
 	}
+}
+
+func assertPodSecurityContext(t *testing.T, deploy *appsv1.Deployment) {
+	t.Helper()
+
+	if !assert.NotNil(t, deploy) {
+		return
+	}
+	expected := &corev1.PodSecurityContext{
+		RunAsNonRoot: ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: corev1.SeccompProfileTypeRuntimeDefault,
+		},
+	}
+	assert.Equal(t, expected, deploy.Spec.Template.Spec.SecurityContext)
 }
 
 type fakeSelfSigner struct {
@@ -817,22 +866,28 @@ func newCluster(name string, accepted bool) *clusterv1.ManagedCluster {
 	}
 }
 
-func newAddOn(name, namespace string) *addonv1alpha1.ManagedClusterAddOn {
-	return &addonv1alpha1.ManagedClusterAddOn{
+func newAddOn(name, namespace string) *addonv1beta1.ManagedClusterAddOn {
+	return &addonv1beta1.ManagedClusterAddOn{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: addonv1alpha1.ManagedClusterAddOnSpec{
-			InstallNamespace: name,
-		},
-		Status: addonv1alpha1.ManagedClusterAddOnStatus{
-			Registrations: []addonv1alpha1.RegistrationConfig{
+		Spec: addonv1beta1.ManagedClusterAddOnSpec{},
+		Status: addonv1beta1.ManagedClusterAddOnStatus{
+			// Simulates what the registration controller sets in production.
+			// In v1beta1, Status.Namespace is set by the registration controller
+			// before the agentdeploy controller calls Manifests().
+			Namespace: name,
+			Registrations: []addonv1beta1.RegistrationConfig{
 				{
-					SignerName: csrv1.KubeAPIServerClientSignerName,
-					Subject: addonv1alpha1.Subject{
-						User:   "system:serviceaccount:" + name + ":cluster-proxy",
-						Groups: []string{"system:serviceaccounts:" + name},
+					Type: addonv1beta1.KubeClient,
+					KubeClient: &addonv1beta1.KubeClientConfig{
+						Subject: addonv1beta1.KubeClientSubject{
+							BaseSubject: addonv1beta1.BaseSubject{
+								User:   "system:serviceaccount:" + name + ":cluster-proxy",
+								Groups: []string{"system:serviceaccounts:" + name},
+							},
+						},
 					},
 				},
 			},
@@ -840,14 +895,14 @@ func newAddOn(name, namespace string) *addonv1alpha1.ManagedClusterAddOn {
 	}
 }
 
-func newManagedProxyConfigReference(name string) addonv1alpha1.ConfigReference {
-	return addonv1alpha1.ConfigReference{
-		ConfigGroupResource: addonv1alpha1.ConfigGroupResource{
+func newManagedProxyConfigReference(name string) addonv1beta1.ConfigReference {
+	return addonv1beta1.ConfigReference{
+		ConfigGroupResource: addonv1beta1.ConfigGroupResource{
 			Group:    "proxy.open-cluster-management.io",
 			Resource: "managedproxyconfigurations",
 		},
-		DesiredConfig: &addonv1alpha1.ConfigSpecHash{
-			ConfigReferent: addonv1alpha1.ConfigReferent{
+		DesiredConfig: &addonv1beta1.ConfigSpecHash{
+			ConfigReferent: addonv1beta1.ConfigReferent{
 				Name: name,
 			},
 			SpecHash: "dummy",
@@ -855,18 +910,14 @@ func newManagedProxyConfigReference(name string) addonv1alpha1.ConfigReference {
 	}
 }
 
-func newAddOndDeploymentConfigReference(name, namespace string) addonv1alpha1.ConfigReference {
-	return addonv1alpha1.ConfigReference{
-		ConfigGroupResource: addonv1alpha1.ConfigGroupResource{
+func newAddOndDeploymentConfigReference(name, namespace string) addonv1beta1.ConfigReference {
+	return addonv1beta1.ConfigReference{
+		ConfigGroupResource: addonv1beta1.ConfigGroupResource{
 			Group:    "addon.open-cluster-management.io",
 			Resource: "addondeploymentconfigs",
 		},
-		ConfigReferent: addonv1alpha1.ConfigReferent{
-			Name:      name,
-			Namespace: namespace,
-		},
-		DesiredConfig: &addonv1alpha1.ConfigSpecHash{
-			ConfigReferent: addonv1alpha1.ConfigReferent{
+		DesiredConfig: &addonv1beta1.ConfigSpecHash{
+			ConfigReferent: addonv1beta1.ConfigReferent{
 				Name:      name,
 				Namespace: namespace,
 			},
@@ -905,14 +956,14 @@ func setProxyAgentReplicas(mpc *proxyv1alpha1.ManagedProxyConfiguration, replica
 	return mpc
 }
 
-func newAddOnDeploymentConfig(name, namespace string) *addonv1alpha1.AddOnDeploymentConfig {
-	return &addonv1alpha1.AddOnDeploymentConfig{
+func newAddOnDeploymentConfig(name, namespace string) *addonv1beta1.AddOnDeploymentConfig {
+	return &addonv1beta1.AddOnDeploymentConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: addonv1alpha1.AddOnDeploymentConfigSpec{
-			NodePlacement: &addonv1alpha1.NodePlacement{
+		Spec: addonv1beta1.AddOnDeploymentConfigSpec{
+			NodePlacement: &addonv1beta1.NodePlacement{
 				Tolerations:  tolerations,
 				NodeSelector: nodeSelector,
 			},
@@ -920,18 +971,18 @@ func newAddOnDeploymentConfig(name, namespace string) *addonv1alpha1.AddOnDeploy
 	}
 }
 
-func newAddOnDeploymentConfigWithCustomizedServiceDomain(name, namespace, serviceDomain string) *addonv1alpha1.AddOnDeploymentConfig {
-	return &addonv1alpha1.AddOnDeploymentConfig{
+func newAddOnDeploymentConfigWithCustomizedServiceDomain(name, namespace, serviceDomain string) *addonv1beta1.AddOnDeploymentConfig {
+	return &addonv1beta1.AddOnDeploymentConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: addonv1alpha1.AddOnDeploymentConfigSpec{
-			NodePlacement: &addonv1alpha1.NodePlacement{
+		Spec: addonv1beta1.AddOnDeploymentConfigSpec{
+			NodePlacement: &addonv1beta1.NodePlacement{
 				Tolerations:  tolerations,
 				NodeSelector: nodeSelector,
 			},
-			CustomizedVariables: []addonv1alpha1.CustomizedVariable{
+			CustomizedVariables: []addonv1beta1.CustomizedVariable{
 				{
 					Name:  "serviceDomain",
 					Value: serviceDomain,
@@ -943,19 +994,19 @@ func newAddOnDeploymentConfigWithCustomizedServiceDomain(name, namespace, servic
 
 var fakeCA = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUM2VENDQWRFQ0ZHSG5lTUpBQ1NjR2lRSnA2K1RYa0NKRVBTVitNQTBHQ1NxR1NJYjNEUUVCQ3dVQU1ERXgKRmpBVUJnTlZCQW9NRFU5d1pXNVRhR2xtZENCQlEwMHhGekFWQmdOVkJBTU1EbmQzZHk1eVpXUm9ZWFF1WTI5dApNQjRYRFRJek1URXhNakV5TURZME4xb1hEVEkwTVRFeE1URXlNRFkwTjFvd01URVdNQlFHQTFVRUNnd05UM0JsCmJsTm9hV1owSUVGRFRURVhNQlVHQTFVRUF3d09kM2QzTG5KbFpHaGhkQzVqYjIwd2dnRWlNQTBHQ1NxR1NJYjMKRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFEUXZMbHFjYXpYZmxXNXgzcVFDSE52ZjNqTFNCY0QrY3pCczFoMApUV0p2TWEvWVd2T2MrK3VNWXg2OW1RaXRCWEFaMEsyUVpQa1BYK2lEc244Mk9mNklYTUpUSVpmZk1Wb3g4UmtqCkNlQ00vdlNaMzExVGlwa0NkaGVTbnp0WElhek1hN0ZZS3BVT2htYTF3L2RReFcvcnIwandwRG9TMFUvN0xhWGwKNHF2bUF4Wk1iSHVWaFk2S0RZSGJ2MEdKYWdqekJtVkpieTZlMFg3MkozL05ZME1KT2plYklrOTEydjBXZ1pUKwo3UWU0a29scVY1MkQvaUhYV0xFUzhXMWQrMFZUbnlRaFAzY3RvNWp3TFZyWnQ2NDFZL0lRc2ZNQ0w1bGdhVTF0Cm9UMlcvQ3F1amw5aCt0UCt2SG1rNk5JZXk2RUNIdm1MV0xLbU5nblp2M0d0bVdnZEFnTUJBQUV3RFFZSktvWkkKaHZjTkFRRUxCUUFEZ2dFQkFKSjBnd0UxSUR4SlNzaUd1TGxDMlVGV2J3U0RHMUVEK3VlQWYvRDRlV0VSWFZDUAo4aVdZZC9RckdsakYxNGxvZllHb280Vk5PL28xQWJQS2gveXB4UW16REdrVE1NaGg2WFg1bExob3RZWHZERlM2CmlkQXk5TFpiWDFUQnV5UEcwNmorbkI4eEtEY3F4aFNLYTlNb0trck9XcmtGbnFZS2syQzIyZGRvZVlZdlRjR2cKK2JmZ3RSWFJRUFdQRmt2NDR5MGlMZVh0S0VMbHBQMkMyQW5JQkU4b2hzY0JiYnloVmptem5YS1dFSTg3T0xmUgoxNDJBOWoydlVVQW80T0o5d1JCei8raDFXUXkyL3prclVUMW90MFdienY1cy91YmlUQkRpSjlQQ0k4YkZmZXplCnpDbCthbEE5aUFJdGt4OVdZS2pzaDFuVHEzTnJwVWM0MXBJWlFBQT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo="
 
-func newAddOnDeploymentConfigWithHttpsProxy(name, namespace string) *addonv1alpha1.AddOnDeploymentConfig {
+func newAddOnDeploymentConfigWithHttpsProxy(name, namespace string) *addonv1beta1.AddOnDeploymentConfig {
 	rawProxyCaCert, _ := base64.StdEncoding.DecodeString(fakeCA)
-	return &addonv1alpha1.AddOnDeploymentConfig{
+	return &addonv1beta1.AddOnDeploymentConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: addonv1alpha1.AddOnDeploymentConfigSpec{
-			NodePlacement: &addonv1alpha1.NodePlacement{
+		Spec: addonv1beta1.AddOnDeploymentConfigSpec{
+			NodePlacement: &addonv1beta1.NodePlacement{
 				Tolerations:  tolerations,
 				NodeSelector: nodeSelector,
 			},
-			ProxyConfig: addonv1alpha1.ProxyConfig{
+			ProxyConfig: addonv1beta1.ProxyConfig{
 				HTTPProxy:  "http://192.168.1.1",
 				HTTPSProxy: "https://192.168.1.1",
 				CABundle:   rawProxyCaCert,
@@ -964,19 +1015,19 @@ func newAddOnDeploymentConfigWithHttpsProxy(name, namespace string) *addonv1alph
 		},
 	}
 }
-func newAddOnDeploymentConfigWithHttpProxy(name, namespace string) *addonv1alpha1.AddOnDeploymentConfig {
+func newAddOnDeploymentConfigWithHttpProxy(name, namespace string) *addonv1beta1.AddOnDeploymentConfig {
 	rawProxyCaCert, _ := base64.StdEncoding.DecodeString(fakeCA)
-	return &addonv1alpha1.AddOnDeploymentConfig{
+	return &addonv1beta1.AddOnDeploymentConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: addonv1alpha1.AddOnDeploymentConfigSpec{
-			NodePlacement: &addonv1alpha1.NodePlacement{
+		Spec: addonv1beta1.AddOnDeploymentConfigSpec{
+			NodePlacement: &addonv1beta1.NodePlacement{
 				Tolerations:  tolerations,
 				NodeSelector: nodeSelector,
 			},
-			ProxyConfig: addonv1alpha1.ProxyConfig{
+			ProxyConfig: addonv1beta1.ProxyConfig{
 				HTTPProxy:  "http://192.168.1.1",
 				HTTPSProxy: "http://192.168.1.1",
 				CABundle:   rawProxyCaCert,
@@ -987,15 +1038,15 @@ func newAddOnDeploymentConfigWithHttpProxy(name, namespace string) *addonv1alpha
 }
 
 func newAddOnDeploymentConfigWithResourcesRequirement(name, namespace, containerID string,
-	resources corev1.ResourceRequirements) *addonv1alpha1.AddOnDeploymentConfig {
+	resources corev1.ResourceRequirements) *addonv1beta1.AddOnDeploymentConfig {
 
-	return &addonv1alpha1.AddOnDeploymentConfig{
+	return &addonv1beta1.AddOnDeploymentConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: namespace,
 		},
-		Spec: addonv1alpha1.AddOnDeploymentConfigSpec{
-			ResourceRequirements: []addonv1alpha1.ContainerResourceRequirements{
+		Spec: addonv1beta1.AddOnDeploymentConfigSpec{
+			ResourceRequirements: []addonv1beta1.ContainerResourceRequirements{
 				{
 					ContainerID: containerID,
 					Resources:   resources,
@@ -1051,6 +1102,18 @@ func getAgentDeployment(manifests []runtime.Object) *appsv1.Deployment {
 		}
 	}
 
+	return nil
+}
+
+func getDeploymentContainer(deploy *appsv1.Deployment, name string) *corev1.Container {
+	if deploy == nil {
+		return nil
+	}
+	for i := range deploy.Spec.Template.Spec.Containers {
+		if deploy.Spec.Template.Spec.Containers[i].Name == name {
+			return &deploy.Spec.Template.Spec.Containers[i]
+		}
+	}
 	return nil
 }
 

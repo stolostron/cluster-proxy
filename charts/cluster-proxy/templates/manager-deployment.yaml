@@ -1,3 +1,4 @@
+{{- $clusterProxyImage := include "cluster-proxy-common.clusterProxyImage" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -18,9 +19,13 @@ spec:
         component: cluster-proxy-manager
     spec:
       serviceAccount: cluster-proxy
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: manager
-          image: {{ .Values.registry }}/{{ .Values.image }}:{{ .Values.tag | default (print "v" .Chart.Version) }}
+          image: {{ $clusterProxyImage }}
           imagePullPolicy: IfNotPresent
           command:
             - /manager
@@ -30,6 +35,7 @@ spec:
             - --enable-kube-api-proxy={{ .Values.enableKubeApiProxy }}
             - --enable-service-proxy={{ .Values.enableServiceProxy }}
             - --image-pull-policy={{ .Values.proxyServer.imagePullPolicy }}
+            - --agent-install-namespace={{ .Values.spokeAddonNamespace }}
             {{- if .Values.featureGates }}
             - --feature-gates=ClusterProfile={{ .Values.featureGates.clusterProfile | default false}}
             {{- end}}

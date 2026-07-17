@@ -1,5 +1,8 @@
 name: GoPostSubmit
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -9,7 +12,7 @@ on:
 
 env:
   # Common versions
-  GO_VERSION: "1.25"
+  GO_VERSION: "1.26"
   GO_REQUIRED_MIN_VERSION: ""
 
 jobs:
@@ -21,13 +24,15 @@ jobs:
         arch: [amd64, arm64]
     steps:
       - name: checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
+          persist-credentials: false
       - name: install Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+          cache: false
       - name: install imagebuilder
         run: go install github.com/openshift/imagebuilder/cmd/imagebuilder@v1.2.3
       - name: pull base image
@@ -35,7 +40,7 @@ jobs:
       - name: images
         run: |
           IMAGE_TAG=latest-${{ matrix.arch }} \
-          IMAGE_BUILD_EXTRA_FLAGS="--build-arg OS=linux --build-arg ARCH=${{ matrix.arch }}" \
+          IMAGE_BUILD_EXTRA_FLAGS="--platform linux/${{ matrix.arch }}" \
             make images
       - name: push
         run: |
@@ -47,9 +52,10 @@ jobs:
     needs: [images]
     steps:
       - name: checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 1
+          persist-credentials: false
       - name: create
         run: |
           echo ${{ secrets.DOCKER_PASSWORD }} | docker login quay.io --username ${{ secrets.DOCKER_USER }} --password-stdin

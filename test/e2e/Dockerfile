@@ -1,5 +1,5 @@
 # Multi-stage build for e2e test binary
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 WORKDIR /workspace
 
@@ -26,6 +26,8 @@ COPY --from=builder /e2e /e2e
 
 # Make binary executable
 RUN chmod +x /e2e
+
+USER 65532:65532
 
 # Default entrypoint - can be overridden with additional args
 # Supports Ginkgo v2 flags like --label-filter
