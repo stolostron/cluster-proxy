@@ -29,5 +29,6 @@ cluster-proxy-*.tgz
 !**/Chart.lock
 
 /_output
+/.output
 
 join.sh
