@@ -36,7 +36,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Linelint
-        uses: fernandrone/linelint@0.0.4
+        uses: fernandrone/linelint@0.0.6
   verify:
     name: verify
     runs-on: ubuntu-latest
@@ -97,7 +97,7 @@ jobs:
       - name: Install clusteradm
         run: curl -L https://raw.githubusercontent.com/open-cluster-management-io/clusteradm/main/install.sh | bash
       - name: Create k8s Kind Cluster
-        uses: helm/kind-action@v1.2.0
+        uses: helm/kind-action@v1.14.0
       - name: Prepare OCM testing environment
         run: |
           clusteradm init --output-join-command-file join.sh --wait
