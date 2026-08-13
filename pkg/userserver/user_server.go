@@ -67,6 +67,9 @@ type userServer struct {
 	serviceProxyCACertPath string
 	agentInstallNamespace  string
 
+	maxIdleConnsPerHost int
+	idleConnTimeout     time.Duration
+
 	addonLister addonlisterv1alpha1.ManagedClusterAddOnLister
 
 	// transports caches one http.Transport per managed cluster name.
@@ -94,6 +97,13 @@ func (k *userServer) AddFlags(cmd *cobra.Command) {
 	flags.StringVar(&k.serviceProxyCACertPath, "service-proxy-ca-cert", k.serviceProxyCACertPath, "The path to the CA certificate of the service proxy server")
 
 	flags.StringVar(&k.agentInstallNamespace, "agent-install-namespace", k.agentInstallNamespace, "The namespace of the agent install")
+
+	flags.IntVar(&k.maxIdleConnsPerHost, "max-idle-conns-per-host", k.maxIdleConnsPerHost,
+		"Maximum idle connections per managed cluster in the transport pool. "+
+			"Can also be set via MAX_IDLE_CONNS_PER_HOST env var.")
+	flags.DurationVar(&k.idleConnTimeout, "idle-conn-timeout", k.idleConnTimeout,
+		"How long idle connections are kept in the transport pool before closing. "+
+			"Can also be set via IDLE_CONN_TIMEOUT env var.")
 }
 
 func (k *userServer) Validate() error {
@@ -116,8 +126,35 @@ func (k *userServer) Validate() error {
 	return nil
 }
 
+// defaultMaxIdleConnsPerHost returns the value of MAX_IDLE_CONNS_PER_HOST env var
+// if set and valid, otherwise returns 10. This follows the same pattern as ANP's
+// PROXY_SERVER_ID: the env var sets the default, the CLI flag overrides it.
+func defaultMaxIdleConnsPerHost() int {
+	if v := os.Getenv("MAX_IDLE_CONNS_PER_HOST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 10 // Default value
+}
+
+// defaultIdleConnTimeout returns the value of IDLE_CONN_TIMEOUT env var
+// if set and valid, otherwise returns 90s. Accepts any duration string
+// parseable by time.ParseDuration (e.g. "30s", "2m").
+func defaultIdleConnTimeout() time.Duration {
+	if v := os.Getenv("IDLE_CONN_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return 90 * time.Second // Default value
+}
+
 func newUserServer() *userServer {
-	return &userServer{}
+	return &userServer{
+		maxIdleConnsPerHost: defaultMaxIdleConnsPerHost(),
+		idleConnTimeout:     defaultIdleConnTimeout(),
+	}
 }
 
 func (k *userServer) init(ctx context.Context) error {
@@ -161,6 +198,9 @@ func (k *userServer) init(ctx context.Context) error {
 	k.addonLister = addonInformerFactory.Addon().V1alpha1().ManagedClusterAddOns().Lister()
 	addonInformerFactory.Start(ctx.Done())
 
+	klog.Infof("transport pool config: maxIdleConnsPerHost=%d idleConnTimeout=%v",
+		k.maxIdleConnsPerHost, k.idleConnTimeout)
+
 	return nil
 }
 
@@ -177,11 +217,11 @@ func (k *userServer) init(ctx context.Context) error {
 // tunnel, no new gRPC stream, no additional Proxy() handler on the proxy-server.
 //
 // DialContext is therefore only called on a pool miss: the first request to a
-// cluster, after IdleConnTimeout (90s) elapses with no activity, or when
-// concurrent requests exhaust the pool (up to MaxIdleConnsPerHost connections
-// are retained). At high request rates, multiple connections may exist
-// simultaneously, but each is reused by subsequent requests rather than torn
-// down after a single use.
+// cluster, after IdleConnTimeout elapses with no activity, or when concurrent
+// requests exhaust the pool (up to MaxIdleConnsPerHost connections are retained).
+// Both values are configurable via CLI flags or environment variables.
+// At high request rates, multiple connections may exist simultaneously, but each
+// is reused by subsequent requests rather than torn down after a single use.
 //
 // Without this caching, every HTTP request creates a new gRPC tunnel (full
 // TCP+TLS+HTTP/2 negotiation) regardless of whether an existing tunnel is idle.
@@ -194,9 +234,9 @@ func (k *userServer) getOrCreateTransport(clusterName string) *http.Transport {
 	}
 
 	transport := &http.Transport{
-		MaxIdleConns:        100, // really MaxIdleConnsPerHost is the limit since this transport is for 1 host (managed cluster) only.
-		MaxIdleConnsPerHost: 10,
-		IdleConnTimeout:     90 * time.Second,
+		MaxIdleConns:        k.maxIdleConnsPerHost, // same as MaxIdleConnsPerHost since this transport serves a single host (one managed cluster)
+		MaxIdleConnsPerHost: k.maxIdleConnsPerHost,
+		IdleConnTimeout:     k.idleConnTimeout,
 		TLSHandshakeTimeout: 10 * time.Second,
 		// Not using our global TLSConfig for outbound will rely on server settings
 		TLSClientConfig: &tls.Config{

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -81,13 +82,86 @@ func setupServiceProxyRootCA(t *testing.T, pool *x509.CertPool) {
 	t.Cleanup(func() { serviceProxyRootCA = old })
 }
 
+// newTestUserServer creates a userServer via newUserServer() (so defaults are
+// properly initialised) with a custom getTunnel for testing.
+func newTestUserServer(getTunnel func(context.Context) (konnectivity.Tunnel, error)) *userServer {
+	s := newUserServer()
+	s.getTunnel = getTunnel
+	return s
+}
+
+// --- defaultMaxIdleConnsPerHost / defaultIdleConnTimeout tests ---
+
+func TestDefaultMaxIdleConnsPerHost(t *testing.T) {
+	// Default when env var is not set.
+	os.Unsetenv("MAX_IDLE_CONNS_PER_HOST")
+	if got := defaultMaxIdleConnsPerHost(); got != 10 {
+		t.Errorf("default: got %d, want 10", got)
+	}
+
+	// Valid env var override.
+	t.Setenv("MAX_IDLE_CONNS_PER_HOST", "50")
+	if got := defaultMaxIdleConnsPerHost(); got != 50 {
+		t.Errorf("env override: got %d, want 50", got)
+	}
+
+	// Non-numeric env var falls back to default.
+	t.Setenv("MAX_IDLE_CONNS_PER_HOST", "abc")
+	if got := defaultMaxIdleConnsPerHost(); got != 10 {
+		t.Errorf("invalid env: got %d, want 10", got)
+	}
+
+	// Zero falls back to default (must be > 0).
+	t.Setenv("MAX_IDLE_CONNS_PER_HOST", "0")
+	if got := defaultMaxIdleConnsPerHost(); got != 10 {
+		t.Errorf("zero env: got %d, want 10", got)
+	}
+
+	// Negative falls back to default.
+	t.Setenv("MAX_IDLE_CONNS_PER_HOST", "-5")
+	if got := defaultMaxIdleConnsPerHost(); got != 10 {
+		t.Errorf("negative env: got %d, want 10", got)
+	}
+}
+
+func TestDefaultIdleConnTimeout(t *testing.T) {
+	// Default when env var is not set.
+	os.Unsetenv("IDLE_CONN_TIMEOUT")
+	if got := defaultIdleConnTimeout(); got != 90*time.Second {
+		t.Errorf("default: got %v, want 90s", got)
+	}
+
+	// Valid env var override (seconds).
+	t.Setenv("IDLE_CONN_TIMEOUT", "30s")
+	if got := defaultIdleConnTimeout(); got != 30*time.Second {
+		t.Errorf("env override 30s: got %v, want 30s", got)
+	}
+
+	// Valid env var override (minutes).
+	t.Setenv("IDLE_CONN_TIMEOUT", "5m")
+	if got := defaultIdleConnTimeout(); got != 5*time.Minute {
+		t.Errorf("env override 5m: got %v, want 5m", got)
+	}
+
+	// Invalid duration falls back to default.
+	t.Setenv("IDLE_CONN_TIMEOUT", "abc")
+	if got := defaultIdleConnTimeout(); got != 90*time.Second {
+		t.Errorf("invalid env: got %v, want 90s", got)
+	}
+
+	// Zero falls back to default (must be > 0).
+	t.Setenv("IDLE_CONN_TIMEOUT", "0s")
+	if got := defaultIdleConnTimeout(); got != 90*time.Second {
+		t.Errorf("zero env: got %v, want 90s", got)
+	}
+}
+
 // --- getOrCreateTransport tests ---
 
 func TestGetOrCreateTransport_ReturnsSameTransportForSameCluster(t *testing.T) {
-	s := &userServer{}
-	s.getTunnel = func(_ context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
 		return newFakeTunnel(), nil
-	}
+	})
 
 	t1 := s.getOrCreateTransport("cluster1")
 	t2 := s.getOrCreateTransport("cluster1")
@@ -98,10 +172,9 @@ func TestGetOrCreateTransport_ReturnsSameTransportForSameCluster(t *testing.T) {
 }
 
 func TestGetOrCreateTransport_ReturnsDifferentTransportForDifferentClusters(t *testing.T) {
-	s := &userServer{}
-	s.getTunnel = func(_ context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
 		return newFakeTunnel(), nil
-	}
+	})
 
 	ta := s.getOrCreateTransport("cluster-a")
 	tb := s.getOrCreateTransport("cluster-b")
@@ -112,21 +185,24 @@ func TestGetOrCreateTransport_ReturnsDifferentTransportForDifferentClusters(t *t
 }
 
 func TestGetOrCreateTransport_Settings(t *testing.T) {
-	s := &userServer{}
-	s.getTunnel = func(_ context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
 		return newFakeTunnel(), nil
-	}
+	})
 
 	transport := s.getOrCreateTransport("cluster1")
 
-	if transport.MaxIdleConns != 100 {
-		t.Errorf("MaxIdleConns: got %d, want 100", transport.MaxIdleConns)
+	// MaxIdleConns should equal MaxIdleConnsPerHost (single-host transport).
+	if transport.MaxIdleConns != s.maxIdleConnsPerHost {
+		t.Errorf("MaxIdleConns: got %d, want %d (should match MaxIdleConnsPerHost)",
+			transport.MaxIdleConns, s.maxIdleConnsPerHost)
 	}
-	if transport.MaxIdleConnsPerHost != 10 {
-		t.Errorf("MaxIdleConnsPerHost: got %d, want 10", transport.MaxIdleConnsPerHost)
+	if transport.MaxIdleConnsPerHost != s.maxIdleConnsPerHost {
+		t.Errorf("MaxIdleConnsPerHost: got %d, want %d",
+			transport.MaxIdleConnsPerHost, s.maxIdleConnsPerHost)
 	}
-	if transport.IdleConnTimeout != 90*time.Second {
-		t.Errorf("IdleConnTimeout: got %v, want 90s", transport.IdleConnTimeout)
+	if transport.IdleConnTimeout != s.idleConnTimeout {
+		t.Errorf("IdleConnTimeout: got %v, want %v",
+			transport.IdleConnTimeout, s.idleConnTimeout)
 	}
 	if transport.ForceAttemptHTTP2 {
 		t.Error("ForceAttemptHTTP2 must be false to allow SPDY upgrades")
@@ -138,13 +214,20 @@ func TestGetOrCreateTransport_Settings(t *testing.T) {
 		t.Errorf("TLS MinVersion: got %d, want %d (TLS 1.2)",
 			transport.TLSClientConfig.MinVersion, tls.VersionTLS12)
 	}
+
+	// Verify defaults specifically.
+	if s.maxIdleConnsPerHost != 10 {
+		t.Errorf("default maxIdleConnsPerHost: got %d, want 10", s.maxIdleConnsPerHost)
+	}
+	if s.idleConnTimeout != 90*time.Second {
+		t.Errorf("default idleConnTimeout: got %v, want 90s", s.idleConnTimeout)
+	}
 }
 
 func TestGetOrCreateTransport_ConcurrentAccessReturnsSameTransport(t *testing.T) {
-	s := &userServer{}
-	s.getTunnel = func(_ context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
 		return newFakeTunnel(), nil
-	}
+	})
 
 	const goroutines = 50
 	results := make([]*http.Transport, goroutines)
@@ -170,11 +253,10 @@ func TestGetOrCreateTransport_ConcurrentAccessReturnsSameTransport(t *testing.T)
 
 func TestGetOrCreateTransport_DialContextCreatesNewTunnelOnPoolMiss(t *testing.T) {
 	var tunnelCount int64
-	s := &userServer{}
-	s.getTunnel = func(_ context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
 		atomic.AddInt64(&tunnelCount, 1)
 		return newFakeTunnel(), nil
-	}
+	})
 
 	transport := s.getOrCreateTransport("cluster1")
 
@@ -205,11 +287,10 @@ func TestGetOrCreateTransport_TunnelNotCreatedOnCacheLookup(t *testing.T) {
 	// Verifies that merely looking up the cached transport does not call
 	// getTunnel -- tunnels are created lazily on DialContext (pool miss).
 	var tunnelCount int64
-	s := &userServer{}
-	s.getTunnel = func(_ context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
 		atomic.AddInt64(&tunnelCount, 1)
 		return newFakeTunnel(), nil
-	}
+	})
 
 	// Two cache lookups -- no DialContext calls yet.
 	_ = s.getOrCreateTransport("cluster1")
@@ -226,11 +307,10 @@ func TestServeHTTP_NonUpgradeUsesTransportCache(t *testing.T) {
 	// Verifies that non-upgrade requests use the cached transport (getTunnel is
 	// not called just from cache lookup -- only on a DialContext pool miss).
 	var tunnelCount int64
-	s := &userServer{}
-	s.getTunnel = func(_ context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
 		atomic.AddInt64(&tunnelCount, 1)
 		return newFakeTunnel(), nil
-	}
+	})
 
 	// Seeding the cache must not trigger getTunnel.
 	preexisting := s.getOrCreateTransport("mycluster")
@@ -255,11 +335,10 @@ func TestServeHTTP_UpgradeRequestBypassesTransportCache(t *testing.T) {
 	setupServiceProxyRootCA(t, rootCAs)
 
 	var tunnelCount int64
-	s := &userServer{}
-	s.getTunnel = func(ctx context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(ctx context.Context) (konnectivity.Tunnel, error) {
 		atomic.AddInt64(&tunnelCount, 1)
 		return newDialingFakeTunnel(backend.Listener.Addr().String()), nil
-	}
+	})
 
 	// Seed the cache for this cluster.
 	preexisting := s.getOrCreateTransport("mycluster")
@@ -285,10 +364,9 @@ func TestServeHTTP_UpgradeRequestBypassesTransportCache(t *testing.T) {
 }
 
 func TestServeHTTP_DifferentClustersGetDifferentTransports(t *testing.T) {
-	s := &userServer{}
-	s.getTunnel = func(_ context.Context) (konnectivity.Tunnel, error) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
 		return newFakeTunnel(), nil
-	}
+	})
 
 	ta := s.getOrCreateTransport("cluster-a")
 	tb := s.getOrCreateTransport("cluster-b")
