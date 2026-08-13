@@ -67,6 +67,7 @@ type userServer struct {
 	serviceProxyCACertPath string
 	agentInstallNamespace  string
 
+	maxConnsPerHost     int
 	maxIdleConnsPerHost int
 	idleConnTimeout     time.Duration
 
@@ -98,6 +99,11 @@ func (k *userServer) AddFlags(cmd *cobra.Command) {
 
 	flags.StringVar(&k.agentInstallNamespace, "agent-install-namespace", k.agentInstallNamespace, "The namespace of the agent install")
 
+	flags.IntVar(&k.maxConnsPerHost, "max-conns-per-host", k.maxConnsPerHost,
+		"Maximum total (active + idle) connections per managed cluster. "+
+			"When reached, additional requests queue until a connection frees up. "+
+			"Defaults to max-idle-conns-per-host if not set. "+
+			"Can also be set via MAX_CONNS_PER_HOST env var.")
 	flags.IntVar(&k.maxIdleConnsPerHost, "max-idle-conns-per-host", k.maxIdleConnsPerHost,
 		"Maximum idle connections per managed cluster in the transport pool. "+
 			"Can also be set via MAX_IDLE_CONNS_PER_HOST env var.")
@@ -138,6 +144,17 @@ func defaultMaxIdleConnsPerHost() int {
 	return 10 // Default value
 }
 
+// defaultMaxConnsPerHost returns the value of MAX_CONNS_PER_HOST env var
+// if set and valid, otherwise returns 0 (sentinel meaning "use maxIdleConnsPerHost").
+func defaultMaxConnsPerHost() int {
+	if v := os.Getenv("MAX_CONNS_PER_HOST"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 0
+}
+
 // defaultIdleConnTimeout returns the value of IDLE_CONN_TIMEOUT env var
 // if set and valid, otherwise returns 90s. Accepts any duration string
 // parseable by time.ParseDuration (e.g. "30s", "2m").
@@ -151,8 +168,14 @@ func defaultIdleConnTimeout() time.Duration {
 }
 
 func newUserServer() *userServer {
+	maxConns := defaultMaxConnsPerHost()
+	maxIdle := defaultMaxIdleConnsPerHost()
+	if maxConns == 0 {
+		maxConns = maxIdle
+	}
 	return &userServer{
-		maxIdleConnsPerHost: defaultMaxIdleConnsPerHost(),
+		maxConnsPerHost:     maxConns,
+		maxIdleConnsPerHost: maxIdle,
 		idleConnTimeout:     defaultIdleConnTimeout(),
 	}
 }
@@ -198,8 +221,8 @@ func (k *userServer) init(ctx context.Context) error {
 	k.addonLister = addonInformerFactory.Addon().V1alpha1().ManagedClusterAddOns().Lister()
 	addonInformerFactory.Start(ctx.Done())
 
-	klog.Infof("transport pool config: maxIdleConnsPerHost=%d idleConnTimeout=%v",
-		k.maxIdleConnsPerHost, k.idleConnTimeout)
+	klog.Infof("transport pool config: maxConnsPerHost=%d maxIdleConnsPerHost=%d idleConnTimeout=%v",
+		k.maxConnsPerHost, k.maxIdleConnsPerHost, k.idleConnTimeout)
 
 	return nil
 }
@@ -234,6 +257,7 @@ func (k *userServer) getOrCreateTransport(clusterName string) *http.Transport {
 	}
 
 	transport := &http.Transport{
+		MaxConnsPerHost:     k.maxConnsPerHost,
 		MaxIdleConns:        k.maxIdleConnsPerHost, // same as MaxIdleConnsPerHost since this transport serves a single host (one managed cluster)
 		MaxIdleConnsPerHost: k.maxIdleConnsPerHost,
 		IdleConnTimeout:     k.idleConnTimeout,

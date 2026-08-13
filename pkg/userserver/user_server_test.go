@@ -124,6 +124,62 @@ func TestDefaultMaxIdleConnsPerHost(t *testing.T) {
 	}
 }
 
+func TestDefaultMaxConnsPerHost(t *testing.T) {
+	// Default when env var is not set — sentinel 0.
+	os.Unsetenv("MAX_CONNS_PER_HOST")
+	if got := defaultMaxConnsPerHost(); got != 0 {
+		t.Errorf("default: got %d, want 0", got)
+	}
+
+	// Valid env var override.
+	t.Setenv("MAX_CONNS_PER_HOST", "200")
+	if got := defaultMaxConnsPerHost(); got != 200 {
+		t.Errorf("env override: got %d, want 200", got)
+	}
+
+	// Non-numeric env var falls back to default.
+	t.Setenv("MAX_CONNS_PER_HOST", "abc")
+	if got := defaultMaxConnsPerHost(); got != 0 {
+		t.Errorf("invalid env: got %d, want 0", got)
+	}
+
+	// Zero falls back to default (must be > 0).
+	t.Setenv("MAX_CONNS_PER_HOST", "0")
+	if got := defaultMaxConnsPerHost(); got != 0 {
+		t.Errorf("zero env: got %d, want 0", got)
+	}
+
+	// Negative falls back to default.
+	t.Setenv("MAX_CONNS_PER_HOST", "-5")
+	if got := defaultMaxConnsPerHost(); got != 0 {
+		t.Errorf("negative env: got %d, want 0", got)
+	}
+}
+
+func TestNewUserServer_MaxConnsPerHostFallback(t *testing.T) {
+	// When MAX_CONNS_PER_HOST is not set, maxConnsPerHost defaults to maxIdleConnsPerHost.
+	os.Unsetenv("MAX_CONNS_PER_HOST")
+	os.Unsetenv("MAX_IDLE_CONNS_PER_HOST")
+	s := newUserServer()
+	if s.maxConnsPerHost != s.maxIdleConnsPerHost {
+		t.Errorf("fallback: maxConnsPerHost=%d, want %d (maxIdleConnsPerHost)",
+			s.maxConnsPerHost, s.maxIdleConnsPerHost)
+	}
+	if s.maxConnsPerHost != 10 {
+		t.Errorf("fallback value: got %d, want 10", s.maxConnsPerHost)
+	}
+
+	// When MAX_CONNS_PER_HOST is set, it takes precedence.
+	t.Setenv("MAX_CONNS_PER_HOST", "200")
+	s = newUserServer()
+	if s.maxConnsPerHost != 200 {
+		t.Errorf("explicit: maxConnsPerHost=%d, want 200", s.maxConnsPerHost)
+	}
+	if s.maxIdleConnsPerHost != 10 {
+		t.Errorf("explicit: maxIdleConnsPerHost=%d, want 10 (unchanged)", s.maxIdleConnsPerHost)
+	}
+}
+
 func TestDefaultIdleConnTimeout(t *testing.T) {
 	// Default when env var is not set.
 	os.Unsetenv("IDLE_CONN_TIMEOUT")
@@ -191,6 +247,11 @@ func TestGetOrCreateTransport_Settings(t *testing.T) {
 
 	transport := s.getOrCreateTransport("cluster1")
 
+	// MaxConnsPerHost should equal the resolved maxConnsPerHost on the struct.
+	if transport.MaxConnsPerHost != s.maxConnsPerHost {
+		t.Errorf("MaxConnsPerHost: got %d, want %d",
+			transport.MaxConnsPerHost, s.maxConnsPerHost)
+	}
 	// MaxIdleConns should equal MaxIdleConnsPerHost (single-host transport).
 	if transport.MaxIdleConns != s.maxIdleConnsPerHost {
 		t.Errorf("MaxIdleConns: got %d, want %d (should match MaxIdleConnsPerHost)",
@@ -215,12 +276,31 @@ func TestGetOrCreateTransport_Settings(t *testing.T) {
 			transport.TLSClientConfig.MinVersion, tls.VersionTLS12)
 	}
 
-	// Verify defaults specifically.
+	// Verify defaults: maxConnsPerHost falls back to maxIdleConnsPerHost.
+	if s.maxConnsPerHost != 10 {
+		t.Errorf("default maxConnsPerHost: got %d, want 10 (fallback to maxIdleConnsPerHost)", s.maxConnsPerHost)
+	}
 	if s.maxIdleConnsPerHost != 10 {
 		t.Errorf("default maxIdleConnsPerHost: got %d, want 10", s.maxIdleConnsPerHost)
 	}
 	if s.idleConnTimeout != 90*time.Second {
 		t.Errorf("default idleConnTimeout: got %v, want 90s", s.idleConnTimeout)
+	}
+}
+
+func TestGetOrCreateTransport_MaxConnsPerHostExplicit(t *testing.T) {
+	s := newTestUserServer(func(_ context.Context) (konnectivity.Tunnel, error) {
+		return newFakeTunnel(), nil
+	})
+	s.maxConnsPerHost = 200
+
+	transport := s.getOrCreateTransport("cluster1")
+
+	if transport.MaxConnsPerHost != 200 {
+		t.Errorf("MaxConnsPerHost: got %d, want 200", transport.MaxConnsPerHost)
+	}
+	if transport.MaxIdleConnsPerHost != 10 {
+		t.Errorf("MaxIdleConnsPerHost: got %d, want 10 (unchanged)", transport.MaxIdleConnsPerHost)
 	}
 }
 
