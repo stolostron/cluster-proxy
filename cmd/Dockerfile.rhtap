@@ -17,7 +17,7 @@ RUN CGO_ENABLED=1 go build -a -o manager cmd/addon-manager/main.go
 RUN CGO_ENABLED=1 go build -a -o cluster-proxy cmd/cluster-proxy/main.go
 
 # Use distroless as minimal base image to package the manager binary
-FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+FROM registry.redhat.io/ubi9/ubi-minimal-pqc:latest
 ENV USER_UID=10001
 
 LABEL \
