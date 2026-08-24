@@ -13,7 +13,6 @@ on:
 
 env:
   # Common versions
-  GO_VERSION: "1.25"
   GO_REQUIRED_MIN_VERSION: ""
 
 jobs:
@@ -26,7 +25,7 @@ jobs:
       - name: install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
       - name: build
         run: make build
   verify:
@@ -38,7 +37,7 @@ jobs:
       - name: install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
       - name: verify
         run: make verify
   unit:
@@ -50,7 +49,7 @@ jobs:
       - name: install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
       - name: unit
         run: make test
       - name: report coverage
@@ -72,7 +71,7 @@ jobs:
       - name: install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
       - name: integration
         run: make test-integration
 
@@ -85,7 +84,7 @@ jobs:
       - name: install Go
         uses: actions/setup-go@v6
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version-file: go.mod
       - name: Install clusteradm
         run: curl -L https://raw.githubusercontent.com/open-cluster-management-io/clusteradm/main/install.sh | bash
       - name: Create k8s Kind Cluster
