@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc"
 	grpccredentials "google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/keepalive"
+	"k8s.io/apimachinery/pkg/util/httpstream"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 	addonutils "open-cluster-management.io/addon-framework/pkg/utils"
@@ -69,6 +70,7 @@ type userServer struct {
 	maxConnsPerHost     int
 	maxIdleConnsPerHost int
 	idleConnTimeout     time.Duration
+	enableHTTP2         bool
 
 	addonLister addonlisterv1alpha1.ManagedClusterAddOnLister
 
@@ -108,6 +110,10 @@ func (k *userServer) AddFlags(cmd *cobra.Command) {
 
 	flags.StringVar(&k.exposedServicesConfigMap, "exposed-services-configmap", constant.ExposedServicesConfigMapName,
 		"Name of the ConfigMap (in the pod's namespace) that lists which services are reachable via the service proxy path")
+
+	flags.BoolVar(&k.enableHTTP2, "enable-http2", true,
+		"Enable HTTP/2 on the cached transport to multiplex concurrent requests over a single tunnel. "+
+			"Disable to fall back to HTTP/1.1 if HTTP/2 causes compatibility issues.")
 }
 
 func (k *userServer) Validate() error {
@@ -135,6 +141,7 @@ func newUserServer() *userServer {
 		maxIdleConnsPerHost: 10,
 		maxConnsPerHost:     10,
 		idleConnTimeout:     90 * time.Second,
+		enableHTTP2:         true,
 	}
 }
 
@@ -189,8 +196,8 @@ func (k *userServer) init(ctx context.Context, kubeClient kubernetes.Interface, 
 	klog.Infof("service allowlist active: %d entries loaded from ConfigMap %s/%s",
 		k.serviceAllowlist.Len(), podNamespace, k.exposedServicesConfigMap)
 
-	klog.Infof("transport pool config: maxConnsPerHost=%d maxIdleConnsPerHost=%d idleConnTimeout=%v",
-		k.maxConnsPerHost, k.maxIdleConnsPerHost, k.idleConnTimeout)
+	klog.Infof("transport pool config: maxConnsPerHost=%d maxIdleConnsPerHost=%d idleConnTimeout=%v http2=%v",
+		k.maxConnsPerHost, k.maxIdleConnsPerHost, k.idleConnTimeout, k.enableHTTP2)
 
 	return nil
 }
@@ -223,9 +230,21 @@ func (k *userServer) getOrCreateTransport(clusterName string) *http.Transport {
 			RootCAs:    serviceProxyRootCA,
 			MinVersion: tls.VersionTLS12,
 		},
-		// golang http pkg automatically upgrade http connection to http2 connection, but http2 can not upgrade to SPDY which used in "kubectl exec".
-		// set ForceAttemptHTTP2 = false to prevent auto http2 upgration
-		ForceAttemptHTTP2:     false,
+		// Enable HTTP/2 on the cached transport. HTTP/2 multiplexes concurrent
+		// requests over a single connection via streams, so all concurrent REST
+		// API calls to the same cluster share one tunnel (one Proxy() handler on
+		// the proxy-server) instead of each needing their own. The service-proxy
+		// accepts HTTP/2 by default -- Go's http.Server enables it automatically
+		// when serving TLS with ListenAndServeTLS.
+		//
+		// SPDY upgrade requests (kubectl exec, VM console sessions) bypass this
+		// cached transport and use a dedicated HTTP/1.1 transport, so SPDY
+		// compatibility is not affected by enabling HTTP/2 here.
+		//
+		// If HTTP/2 negotiation fails (e.g. TLS profile incompatibility), the
+		// transport falls back to HTTP/1.1 automatically, in which case
+		// MaxConnsPerHost limits concurrent tunnels as a safety net.
+		ForceAttemptHTTP2:     k.enableHTTP2,
 		ExpectContinueTimeout: 1 * time.Second,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			klog.V(4).Infof("creating tunnel for cluster %s (transport pool miss)", clusterName)
@@ -286,10 +305,48 @@ func (k *userServer) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// All requests use the cached transport — upgrade requests (SPDY/WebSocket)
-	// and REST requests share the same pool per cluster.
+	// Upgrade requests (SPDY/WebSocket, e.g. kubectl exec, terminal sessions) are
+	// long-lived and need a dedicated tunnel for their duration. They bypass the
+	// shared transport cache and get a single-use HTTP/1.1 tunnel.
+	//
+	// REST API requests use the cached transport. Go's http.Transport retains
+	// the net.Conn (the konnectivity tunnel) in its idle pool after each request
+	// completes, so DialContext -- which creates a new gRPC tunnel -- is only
+	// called on a pool miss. Sequential requests to the same cluster reuse the
+	// idle connection and the existing Proxy() stream on the proxy-server,
+	// avoiding the per-request tunnel churn that causes proxy-server saturation.
+	var transport http.RoundTripper
+	if httpstream.IsUpgradeRequest(req) {
+		klog.V(4).Infof("upgrade request for cluster %s, using dedicated tunnel", tsc.Cluster)
+		tunnel, err := k.getTunnel(req.Context())
+		if err != nil {
+			http.Error(wr, err.Error(), http.StatusBadRequest)
+			return
+		}
+		transport = &http.Transport{
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			TLSClientConfig: &tls.Config{
+				RootCAs:    serviceProxyRootCA,
+				MinVersion: tls.VersionTLS12,
+			},
+			// golang http pkg automatically upgrade http connection to http2 connection, but http2 can not upgrade to SPDY which used in "kubectl exec".
+			// set ForceAttemptHTTP2 = false to prevent auto http2 upgration
+			ForceAttemptHTTP2: false,
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				klog.V(4).Infof("proxy dial to %s (upgrade request)", addr)
+				return tunnel.DialContext(ctx, network, addr)
+			},
+		}
+	} else {
+		transport = k.getOrCreateTransport(tsc.Cluster)
+	}
+
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	proxy.Transport = k.getOrCreateTransport(tsc.Cluster)
+	proxy.Transport = transport
+	proxy.FlushInterval = -1
 
 	proxy.ErrorHandler = func(rw http.ResponseWriter, r *http.Request, e error) {
 		http.Error(rw, fmt.Sprintf("proxy to anp-proxy-server failed because %v", e), http.StatusBadGateway)
