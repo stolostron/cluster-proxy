@@ -23,7 +23,7 @@ jobs:
       - name: checkout code
         uses: actions/checkout@v7
       - name: install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: build
@@ -43,7 +43,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
       - name: install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: verify
@@ -55,7 +55,7 @@ jobs:
       - name: checkout code
         uses: actions/checkout@v7
       - name: install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: unit
@@ -77,7 +77,7 @@ jobs:
       - name: checkout code
         uses: actions/checkout@v7
       - name: install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: integration
@@ -90,7 +90,7 @@ jobs:
       - name: checkout code
         uses: actions/checkout@v7
       - name: install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Install clusteradm
