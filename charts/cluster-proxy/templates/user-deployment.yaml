@@ -20,6 +20,9 @@ spec:
         component: cluster-proxy-addon-user
     spec:
       serviceAccount: cluster-proxy
+      # By default, shutdown can take up to 30s after SIGTERM; the extra 10s
+      # lets process cleanup finish before the kubelet sends SIGKILL.
+      terminationGracePeriodSeconds: 40
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -60,6 +63,8 @@ spec:
             - --server-cert=/user-tls/tls.crt
             - --service-proxy-ca-cert=/proxy-ca/ca.crt
             - --agent-install-namespace={{ .Values.spokeAddonNamespace }}
+            - --exposed-services-configmap={{ .Values.exposedServicesConfigMapName | default "cluster-proxy-exposed-services" }}
+            - --enable-http2={{ .Values.userServer.enableHTTP2 }}
           env:
             - name: POD_NAMESPACE
               valueFrom:
@@ -73,6 +78,17 @@ spec:
             privileged: false
             runAsNonRoot: true
             readOnlyRootFilesystem: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8000
+            periodSeconds: 2
           volumeMounts:
             - name: user-tls-vol
               mountPath: /user-tls
