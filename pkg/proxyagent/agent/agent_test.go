@@ -14,6 +14,7 @@ import (
 	mathrand "math/rand"
 	"net"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,11 +38,11 @@ import (
 	runtimeclient "sigs.k8s.io/controller-runtime/pkg/client"
 	fakeruntime "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"open-cluster-management.io/addon-framework/pkg/addonfactory"
 	addonv1beta1 "open-cluster-management.io/api/addon/v1beta1"
 	fakeaddon "open-cluster-management.io/api/client/addon/clientset/versioned/fake"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 	proxyv1alpha1 "open-cluster-management.io/cluster-proxy/pkg/apis/proxy/v1alpha1"
-	"open-cluster-management.io/cluster-proxy/pkg/constant"
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/authentication/selfsigned"
 )
 
@@ -54,6 +55,61 @@ var (
 func init() {
 	_ = proxyv1alpha1.AddToScheme(testscheme)
 	_ = addonv1beta1.Install(testscheme)
+}
+
+func TestMergeAndNormalizeValuesFuncs(t *testing.T) {
+	t.Run("normalizes each result before merging", func(t *testing.T) {
+		getValues := mergeAndNormalizeValuesFuncs(
+			func(cluster *clusterv1.ManagedCluster,
+				addon *addonv1beta1.ManagedClusterAddOn) (addonfactory.Values, error) {
+				return addonfactory.Values{
+					"global": map[string]interface{}{
+						"nodeSelector": map[string]string{
+							"existing": "preserved",
+							"shared":   "first",
+						},
+					},
+				}, nil
+			},
+			func(cluster *clusterv1.ManagedCluster,
+				addon *addonv1beta1.ManagedClusterAddOn) (addonfactory.Values, error) {
+				return addonfactory.Values{
+					"global": map[string]interface{}{
+						"nodeSelector": map[string]string{
+							"added":  "new",
+							"shared": "second",
+						},
+					},
+				}, nil
+			},
+		)
+
+		values, err := getValues(nil, nil)
+		if !assert.NoError(t, err) {
+			return
+		}
+		assert.Equal(t, addonfactory.Values{
+			"global": map[string]interface{}{
+				"nodeSelector": map[string]interface{}{
+					"existing": "preserved",
+					"added":    "new",
+					"shared":   "second",
+				},
+			},
+		}, values)
+	})
+
+	t.Run("returns a contextual normalization error", func(t *testing.T) {
+		getValues := mergeAndNormalizeValuesFuncs(
+			func(cluster *clusterv1.ManagedCluster,
+				addon *addonv1beta1.ManagedClusterAddOn) (addonfactory.Values, error) {
+				return addonfactory.Values{"unsupported": make(chan string)}, nil
+			},
+		)
+
+		_, err := getValues(nil, nil)
+		assert.ErrorContains(t, err, "failed to normalize Helm values:")
+	})
 }
 
 func TestRemoveDupAndSortservicesToExpose(t *testing.T) {
@@ -276,6 +332,15 @@ func TestNewAgentAddon(t *testing.T) {
 	expectedManifestNamesWithServiceProxy := append([]string{}, expectedManifestNames...)
 	expectedManifestNamesWithServiceProxy = append(expectedManifestNamesWithServiceProxy, "cluster-proxy-service-proxy-server-certificates")
 
+	newAddonWithDeploymentConfig := func() *addonv1beta1.ManagedClusterAddOn {
+		addOn := newAddOn(addOnName, clusterName)
+		addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
+			newManagedProxyConfigReference(managedProxyConfigName),
+			newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
+		}
+		return addOn
+	}
+
 	cases := []struct {
 		name                    string
 		cluster                 *clusterv1.ManagedCluster
@@ -438,10 +503,16 @@ func TestNewAgentAddon(t *testing.T) {
 				agentDeploy := getAgentDeployment(manifests)
 				assert.NotNil(t, agentDeploy)
 				serviceProxy := getDeploymentContainer(agentDeploy, "service-proxy")
-				if assert.NotNil(t, serviceProxy) &&
-					assert.NotNil(t, serviceProxy.ReadinessProbe) &&
-					assert.NotNil(t, serviceProxy.ReadinessProbe.TCPSocket) {
-					assert.Equal(t, int32(constant.ServiceProxyPort), serviceProxy.ReadinessProbe.TCPSocket.Port.IntVal)
+				if assert.NotNil(t, serviceProxy) {
+					if assert.NotNil(t, serviceProxy.ReadinessProbe) &&
+						assert.NotNil(t, serviceProxy.ReadinessProbe.HTTPGet) {
+						assert.Equal(t, "/readyz", serviceProxy.ReadinessProbe.HTTPGet.Path)
+						assert.Equal(t, int32(8000), serviceProxy.ReadinessProbe.HTTPGet.Port.IntVal)
+					}
+					// oidc flags must not be rendered when the oidc variables are unset
+					for _, arg := range serviceProxy.Args {
+						assert.NotContains(t, arg, "--oidc-")
+					}
 				}
 			},
 		},
@@ -501,16 +572,9 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
-			name:    "with addon deployment config",
-			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1beta1.ManagedClusterAddOn {
-				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
-					newManagedProxyConfigReference(managedProxyConfigName),
-					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
-				}
-				return addOn
-			}(),
+			name:                    "with addon deployment config",
+			cluster:                 newCluster(clusterName, true),
+			addon:                   newAddonWithDeploymentConfig(),
 			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
 			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfig(addOndDeployConfigName, clusterName)},
 			enableKubeApiProxy:      true,
@@ -537,19 +601,13 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
-			name:    "with addon deployment config using a customized serviceDomain",
-			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1beta1.ManagedClusterAddOn {
-				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
-					newManagedProxyConfigReference(managedProxyConfigName),
-					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
-				}
-				return addOn
-			}(),
-			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
-			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithCustomizedServiceDomain(addOndDeployConfigName, clusterName, "svc.test.com")},
-			enableKubeApiProxy:      true,
+			name:               "with addon deployment config using a customized serviceDomain",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "serviceDomain", Value: "svc.test.com"})},
+			enableKubeApiProxy: true,
 			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
 				assert.Len(t, manifests, len(expectedManifestNames))
 				assert.ElementsMatch(t, expectedManifestNames, manifestNames(manifests))
@@ -559,19 +617,13 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
-			name:    "enable-kube-api-proxy is false",
-			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1beta1.ManagedClusterAddOn {
-				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
-					newManagedProxyConfigReference(managedProxyConfigName),
-					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
-				}
-				return addOn
-			}(),
-			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
-			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithCustomizedServiceDomain(addOndDeployConfigName, clusterName, "svc.test.com")},
-			enableKubeApiProxy:      false,
+			name:               "enable-kube-api-proxy is false",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "serviceDomain", Value: "svc.test.com"})},
+			enableKubeApiProxy: false,
 			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
 				// expect cluster service not created.
 				assert.Len(t, manifests, len(expectedManifestNames)-1)
@@ -579,16 +631,9 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
-			name:    "with addon deployment config including https proxy config",
-			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1beta1.ManagedClusterAddOn {
-				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
-					newManagedProxyConfigReference(managedProxyConfigName),
-					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
-				}
-				return addOn
-			}(),
+			name:                    "with addon deployment config including https proxy config",
+			cluster:                 newCluster(clusterName, true),
+			addon:                   newAddonWithDeploymentConfig(),
 			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
 			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithHttpsProxy(addOndDeployConfigName, clusterName)},
 			enableKubeApiProxy:      true,
@@ -612,16 +657,9 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
-			name:    "with addon deployment config including http proxy config",
-			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1beta1.ManagedClusterAddOn {
-				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
-					newManagedProxyConfigReference(managedProxyConfigName),
-					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
-				}
-				return addOn
-			}(),
+			name:                    "with addon deployment config including http proxy config",
+			cluster:                 newCluster(clusterName, true),
+			addon:                   newAddonWithDeploymentConfig(),
 			managedProxyConfig:      newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
 			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithHttpProxy(addOndDeployConfigName, clusterName)},
 			enableKubeApiProxy:      true,
@@ -645,16 +683,9 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
-			name:    "with addon deployment config including install namespace",
-			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1beta1.ManagedClusterAddOn {
-				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
-					newManagedProxyConfigReference(managedProxyConfigName),
-					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
-				}
-				return addOn
-			}(),
+			name:               "with addon deployment config including install namespace",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
 			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
 			addOndDeploymentConfigs: []runtime.Object{
 				func() *addonv1beta1.AddOnDeploymentConfig {
@@ -673,29 +704,12 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
-			name:    "with addon deployment config using customized variables",
-			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1beta1.ManagedClusterAddOn {
-				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
-					newManagedProxyConfigReference(managedProxyConfigName),
-					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
-				}
-				return addOn
-			}(),
+			name:               "with addon deployment config using customized variables",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
 			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
-			addOndDeploymentConfigs: []runtime.Object{
-				func() *addonv1beta1.AddOnDeploymentConfig {
-					config := newAddOnDeploymentConfig(addOndDeployConfigName, clusterName)
-					config.Spec.CustomizedVariables = []addonv1beta1.CustomizedVariable{
-						{
-							Name:  "replicas",
-							Value: "10",
-						},
-					}
-					return config
-				}(),
-			},
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "replicas", Value: "10"})},
 			enableKubeApiProxy: true,
 			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
 				assert.Len(t, manifests, len(expectedManifestNames))
@@ -706,16 +720,218 @@ func TestNewAgentAddon(t *testing.T) {
 			},
 		},
 		{
-			name:    "with addon deployment config using resources requirement",
-			cluster: newCluster(clusterName, true),
-			addon: func() *addonv1beta1.ManagedClusterAddOn {
-				addOn := newAddOn(addOnName, clusterName)
-				addOn.Status.ConfigReferences = []addonv1beta1.ConfigReference{
-					newManagedProxyConfigReference(managedProxyConfigName),
-					newAddOndDeploymentConfigReference(addOndDeployConfigName, clusterName),
+			name:               "with addon deployment config using customized oidc variables",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+				addonv1beta1.CustomizedVariable{Name: "oidcUsernameClaim", Value: "email"},
+				addonv1beta1.CustomizedVariable{Name: "oidcUsernamePrefix", Value: "oidc:"},
+				addonv1beta1.CustomizedVariable{Name: "oidcGroupsClaim", Value: "groups"},
+				addonv1beta1.CustomizedVariable{Name: "oidcGroupsPrefix", Value: "oidc:"},
+				addonv1beta1.CustomizedVariable{Name: "oidcReservedNamePrefixes", Value: "system:,dev:"},
+				addonv1beta1.CustomizedVariable{Name: "oidcCAConfigMap", Value: "dex-ca"},
+				addonv1beta1.CustomizedVariable{Name: "oidcSigningAlgs", Value: "RS256,ES256"},
+				addonv1beta1.CustomizedVariable{Name: "oidcRequiredClaimsJSON", Value: `{"hd":"example.com","tenant":"tenant-id"}`},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
+				agentDeploy := getAgentDeployment(manifests)
+				assert.NotNil(t, agentDeploy)
+				serviceProxy := getDeploymentContainer(agentDeploy, "service-proxy")
+				if assert.NotNil(t, serviceProxy) {
+					assert.Subset(t, serviceProxy.Args, []string{
+						"--oidc-issuer-url=https://dex.example.com/dex",
+						"--oidc-client-id=cluster-proxy",
+						"--oidc-username-claim=email",
+						"--oidc-username-prefix=oidc:",
+						"--oidc-groups-claim=groups",
+						"--oidc-groups-prefix=oidc:",
+						"--oidc-reserved-name-prefixes=system:,dev:",
+						"--oidc-ca-configmap=dex-ca",
+						"--oidc-signing-algs=RS256,ES256",
+						"--oidc-required-claim=hd=example.com",
+						"--oidc-required-claim=tenant=tenant-id",
+					})
+					assert.False(t, slices.ContainsFunc(serviceProxy.VolumeMounts, func(mount corev1.VolumeMount) bool {
+						return mount.Name == "oidc-ca"
+					}))
 				}
-				return addOn
-			}(),
+				assert.False(t, slices.ContainsFunc(agentDeploy.Spec.Template.Spec.Volumes, func(volume corev1.Volume) bool {
+					return volume.Name == "oidc-ca"
+				}))
+			},
+		},
+		{
+			name:               "with addon deployment config using default oidc reserved name prefixes",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
+				agentDeploy := getAgentDeployment(manifests)
+				assert.NotNil(t, agentDeploy)
+				serviceProxy := getDeploymentContainer(agentDeploy, "service-proxy")
+				if assert.NotNil(t, serviceProxy) {
+					assert.Contains(t, serviceProxy.Args, "--oidc-reserved-name-prefixes=system:")
+				}
+			},
+		},
+		{
+			// the flag is passed unconditionally, so an empty value disables the
+			// check instead of falling back to the agent's own default
+			name:               "with addon deployment config disabling oidc reserved name prefixes",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+				addonv1beta1.CustomizedVariable{Name: "oidcReservedNamePrefixes", Value: ""},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
+				agentDeploy := getAgentDeployment(manifests)
+				assert.NotNil(t, agentDeploy)
+				serviceProxy := getDeploymentContainer(agentDeploy, "service-proxy")
+				if assert.NotNil(t, serviceProxy) {
+					assert.Contains(t, serviceProxy.Args, "--oidc-reserved-name-prefixes=")
+				}
+			},
+		},
+		{
+			name:               "rejects oidc issuer without client id",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			expectedErrorMsg:   "oidcIssuerURL and oidcClientID must be specified together",
+		},
+		{
+			name:               "rejects oidc client id without issuer",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			expectedErrorMsg:   "oidcIssuerURL and oidcClientID must be specified together",
+		},
+		{
+			name:               "enableImpersonation=false disables hub authentication",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "enableImpersonation", Value: "false"},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
+				serviceProxy := getDeploymentContainer(getAgentDeployment(manifests), "service-proxy")
+				if assert.NotNil(t, serviceProxy) {
+					assert.Contains(t, serviceProxy.Args, "--enable-impersonation=false")
+				}
+				assert.False(t, clusterRoleAllowsImpersonation(getClusterRole(manifests, "cluster-proxy-addon-agent-impersonator")))
+			},
+		},
+		{
+			name:               "oidc grants impersonation when enableImpersonation=false",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "enableImpersonation", Value: "false"},
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			verifyManifests: func(t *testing.T, manifests []runtime.Object) {
+				serviceProxy := getDeploymentContainer(getAgentDeployment(manifests), "service-proxy")
+				if assert.NotNil(t, serviceProxy) {
+					assert.Contains(t, serviceProxy.Args, "--enable-impersonation=false")
+				}
+				assert.True(t, clusterRoleAllowsImpersonation(getClusterRole(manifests, "cluster-proxy-addon-agent-impersonator")))
+			},
+		},
+		{
+			// customizedVariables are string-typed, so the chart's schema is what
+			// rejects an empty prefix before it reaches the agent
+			name:               "rejects an empty oidc reserved name prefix",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+				addonv1beta1.CustomizedVariable{Name: "oidcReservedNamePrefixes", Value: "system:,,dev:"},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			expectedErrorMsg:   "oidcReservedNamePrefixes",
+		},
+		{
+			name:               "rejects malformed oidc required claims JSON",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+				addonv1beta1.CustomizedVariable{Name: "oidcRequiredClaimsJSON", Value: `{"hd":`},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			expectedErrorMsg:   "oidcRequiredClaimsJSON",
+		},
+		{
+			name:               "rejects non-object oidc required claims JSON",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+				addonv1beta1.CustomizedVariable{Name: "oidcRequiredClaimsJSON", Value: `[]`},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			expectedErrorMsg:   "oidcRequiredClaimsJSON must be a JSON object",
+		},
+		{
+			name:               "rejects non-string oidc required claim values",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
+			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
+			addOndDeploymentConfigs: []runtime.Object{newAddOnDeploymentConfigWithVariables(addOndDeployConfigName, clusterName,
+				addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: "https://dex.example.com/dex"},
+				addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+				addonv1beta1.CustomizedVariable{Name: "oidcRequiredClaimsJSON", Value: `{"tenant":42}`},
+			)},
+			enableKubeApiProxy: true,
+			enableServiceProxy: true,
+			expectedErrorMsg:   "oidcRequiredClaimsJSON values must be strings",
+		},
+		{
+			name:               "with addon deployment config using resources requirement",
+			cluster:            newCluster(clusterName, true),
+			addon:              newAddonWithDeploymentConfig(),
 			managedProxyConfig: newManagedProxyConfig(managedProxyConfigName, proxyv1alpha1.EntryPointTypePortForward),
 			addOndDeploymentConfigs: []runtime.Object{
 				newAddOnDeploymentConfigWithResourcesRequirement(
@@ -799,6 +1015,153 @@ func TestNewAgentAddon(t *testing.T) {
 			assert.NoError(t, err)
 			assertPodSecurityContext(t, getAgentDeployment(manifests))
 			c.verifyManifests(t, manifests)
+		})
+	}
+}
+
+func TestImpersonationRBACConfiguration(t *testing.T) {
+	const (
+		addonName        = "open-cluster-management-cluster-proxy"
+		clusterName      = "cluster"
+		deployConfigName = "deploy-config"
+	)
+
+	tests := []struct {
+		name                string
+		enableServiceProxy  bool
+		enableImpersonation string
+		oidcIssuerURL       string
+		additionalArgs      []string
+		wantImpersonation   bool
+		wantError           string
+	}{
+		{
+			name:                "alternate typed true value",
+			enableServiceProxy:  true,
+			enableImpersonation: "T",
+			wantImpersonation:   true,
+		},
+		{
+			name:                "additional hub authentication equals form is rejected",
+			enableServiceProxy:  true,
+			enableImpersonation: "false",
+			additionalArgs:      []string{"--enable-impersonation=true"},
+			wantError:           "additionalServiceProxyArgs must not set --enable-impersonation",
+		},
+		{
+			name:                "additional hub authentication bare form is rejected",
+			enableServiceProxy:  true,
+			enableImpersonation: "false",
+			additionalArgs:      []string{"--enable-impersonation"},
+			wantError:           "additionalServiceProxyArgs must not set --enable-impersonation",
+		},
+		{
+			name:                "additional oidc equals form",
+			enableServiceProxy:  true,
+			enableImpersonation: "false",
+			additionalArgs: []string{
+				"--oidc-issuer-url=https://dex.example.com/dex",
+				"--oidc-client-id=cluster-proxy",
+			},
+			wantImpersonation: true,
+		},
+		{
+			name:                "additional oidc split form",
+			enableServiceProxy:  true,
+			enableImpersonation: "false",
+			additionalArgs: []string{
+				"--oidc-issuer-url", "https://dex.example.com/dex",
+				"--oidc-client-id", "cluster-proxy",
+			},
+			wantImpersonation: true,
+		},
+		{
+			name:                "disabled authentication arguments",
+			enableServiceProxy:  true,
+			enableImpersonation: "false",
+			additionalArgs: []string{
+				"--oidc-issuer-url=",
+			},
+		},
+		{
+			name:                "typed and additional oidc issuer are rejected",
+			enableServiceProxy:  true,
+			enableImpersonation: "false",
+			oidcIssuerURL:       "https://typed.example.com/dex",
+			additionalArgs: []string{
+				"--oidc-issuer-url=https://additional.example.com/dex",
+			},
+			wantError: "configure the OIDC issuer with either oidcIssuerURL or --oidc-issuer-url",
+		},
+		{
+			name:                "duplicate additional oidc issuer is rejected",
+			enableServiceProxy:  true,
+			enableImpersonation: "false",
+			additionalArgs: []string{
+				"--oidc-issuer-url=https://dex.example.com/dex",
+				"--oidc-issuer-url=",
+			},
+			wantError: "additionalServiceProxyArgs must set --oidc-issuer-url at most once",
+		},
+		{
+			name:                "disabled service proxy never grants impersonation",
+			enableImpersonation: "false",
+			additionalArgs: []string{
+				"--enable-impersonation=true",
+				"--oidc-issuer-url=https://dex.example.com/dex",
+				"--oidc-client-id=cluster-proxy",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			proxyConfig := newManagedProxyConfig(ManagedClusterConfigurationName, proxyv1alpha1.EntryPointTypePortForward)
+			proxyConfig.Spec.ProxyAgent.AdditionalServiceProxyArgs = test.additionalArgs
+
+			addon := newAddOn(addonName, clusterName)
+			addon.Status.ConfigReferences = []addonv1beta1.ConfigReference{
+				newManagedProxyConfigReference(ManagedClusterConfigurationName),
+				newAddOndDeploymentConfigReference(deployConfigName, clusterName),
+			}
+			variables := []addonv1beta1.CustomizedVariable{
+				{Name: "enableImpersonation", Value: test.enableImpersonation},
+			}
+			if test.oidcIssuerURL != "" {
+				variables = append(variables,
+					addonv1beta1.CustomizedVariable{Name: "oidcIssuerURL", Value: test.oidcIssuerURL},
+					addonv1beta1.CustomizedVariable{Name: "oidcClientID", Value: "cluster-proxy"},
+				)
+			}
+			deploymentConfig := newAddOnDeploymentConfigWithVariables(deployConfigName, clusterName, variables...)
+
+			agentAddon, err := NewAgentAddon(
+				&fakeSelfSigner{t: t},
+				"test",
+				fakeruntime.NewClientBuilder().WithObjects(proxyConfig).Build(),
+				fakekube.NewSimpleClientset(&corev1.Secret{
+					ObjectMeta: metav1.ObjectMeta{Name: "cluster-proxy-service-proxy-server-cert", Namespace: "test"},
+					Data:       map[string][]byte{"tls.crt": []byte("testcrt"), "tls.key": []byte("testkey")},
+				}),
+				true,
+				test.enableServiceProxy,
+				false,
+				fakeaddon.NewSimpleClientset(deploymentConfig),
+			)
+			if !assert.NoError(t, err) {
+				return
+			}
+
+			manifests, err := agentAddon.Manifests(context.Background(), newCluster(clusterName, true), addon)
+			if test.wantError != "" {
+				assert.ErrorContains(t, err, test.wantError)
+				return
+			}
+			if !assert.NoError(t, err) {
+				return
+			}
+			assert.Equal(t, test.wantImpersonation,
+				clusterRoleAllowsImpersonation(getClusterRole(manifests, "cluster-proxy-addon-agent-impersonator")))
 		})
 	}
 }
@@ -1008,25 +1371,11 @@ func newAddOnDeploymentConfig(name, namespace string) *addonv1beta1.AddOnDeploym
 	}
 }
 
-func newAddOnDeploymentConfigWithCustomizedServiceDomain(name, namespace, serviceDomain string) *addonv1beta1.AddOnDeploymentConfig {
-	return &addonv1beta1.AddOnDeploymentConfig{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: addonv1beta1.AddOnDeploymentConfigSpec{
-			NodePlacement: &addonv1beta1.NodePlacement{
-				Tolerations:  tolerations,
-				NodeSelector: nodeSelector,
-			},
-			CustomizedVariables: []addonv1beta1.CustomizedVariable{
-				{
-					Name:  "serviceDomain",
-					Value: serviceDomain,
-				},
-			},
-		},
-	}
+func newAddOnDeploymentConfigWithVariables(name, namespace string,
+	variables ...addonv1beta1.CustomizedVariable) *addonv1beta1.AddOnDeploymentConfig {
+	config := newAddOnDeploymentConfig(name, namespace)
+	config.Spec.CustomizedVariables = variables
+	return config
 }
 
 var fakeCA = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSUM2VENDQWRFQ0ZHSG5lTUpBQ1NjR2lRSnA2K1RYa0NKRVBTVitNQTBHQ1NxR1NJYjNEUUVCQ3dVQU1ERXgKRmpBVUJnTlZCQW9NRFU5d1pXNVRhR2xtZENCQlEwMHhGekFWQmdOVkJBTU1EbmQzZHk1eVpXUm9ZWFF1WTI5dApNQjRYRFRJek1URXhNakV5TURZME4xb1hEVEkwTVRFeE1URXlNRFkwTjFvd01URVdNQlFHQTFVRUNnd05UM0JsCmJsTm9hV1owSUVGRFRURVhNQlVHQTFVRUF3d09kM2QzTG5KbFpHaGhkQzVqYjIwd2dnRWlNQTBHQ1NxR1NJYjMKRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFEUXZMbHFjYXpYZmxXNXgzcVFDSE52ZjNqTFNCY0QrY3pCczFoMApUV0p2TWEvWVd2T2MrK3VNWXg2OW1RaXRCWEFaMEsyUVpQa1BYK2lEc244Mk9mNklYTUpUSVpmZk1Wb3g4UmtqCkNlQ00vdlNaMzExVGlwa0NkaGVTbnp0WElhek1hN0ZZS3BVT2htYTF3L2RReFcvcnIwandwRG9TMFUvN0xhWGwKNHF2bUF4Wk1iSHVWaFk2S0RZSGJ2MEdKYWdqekJtVkpieTZlMFg3MkozL05ZME1KT2plYklrOTEydjBXZ1pUKwo3UWU0a29scVY1MkQvaUhYV0xFUzhXMWQrMFZUbnlRaFAzY3RvNWp3TFZyWnQ2NDFZL0lRc2ZNQ0w1bGdhVTF0Cm9UMlcvQ3F1amw5aCt0UCt2SG1rNk5JZXk2RUNIdm1MV0xLbU5nblp2M0d0bVdnZEFnTUJBQUV3RFFZSktvWkkKaHZjTkFRRUxCUUFEZ2dFQkFKSjBnd0UxSUR4SlNzaUd1TGxDMlVGV2J3U0RHMUVEK3VlQWYvRDRlV0VSWFZDUAo4aVdZZC9RckdsakYxNGxvZllHb280Vk5PL28xQWJQS2gveXB4UW16REdrVE1NaGg2WFg1bExob3RZWHZERlM2CmlkQXk5TFpiWDFUQnV5UEcwNmorbkI4eEtEY3F4aFNLYTlNb0trck9XcmtGbnFZS2syQzIyZGRvZVlZdlRjR2cKK2JmZ3RSWFJRUFdQRmt2NDR5MGlMZVh0S0VMbHBQMkMyQW5JQkU4b2hzY0JiYnloVmptem5YS1dFSTg3T0xmUgoxNDJBOWoydlVVQW80T0o5d1JCei8raDFXUXkyL3prclVUMW90MFdienY1cy91YmlUQkRpSjlQQ0k4YkZmZXplCnpDbCthbEE5aUFJdGt4OVdZS2pzaDFuVHEzTnJwVWM0MXBJWlFBQT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQo="
@@ -1140,6 +1489,29 @@ func getAgentDeployment(manifests []runtime.Object) *appsv1.Deployment {
 	}
 
 	return nil
+}
+
+func getClusterRole(manifests []runtime.Object, name string) *rbacv1.ClusterRole {
+	for _, manifest := range manifests {
+		if clusterRole, ok := manifest.(*rbacv1.ClusterRole); ok && clusterRole.Name == name {
+			return clusterRole
+		}
+	}
+	return nil
+}
+
+func clusterRoleAllowsImpersonation(clusterRole *rbacv1.ClusterRole) bool {
+	if clusterRole == nil {
+		return false
+	}
+	for _, rule := range clusterRole.Rules {
+		if slices.Contains(rule.Verbs, "impersonate") &&
+			slices.Contains(rule.Resources, "users") &&
+			slices.Contains(rule.Resources, "groups") {
+			return true
+		}
+	}
+	return false
 }
 
 func getAgentNetworkPolicy(manifests []runtime.Object) *networkingv1.NetworkPolicy {

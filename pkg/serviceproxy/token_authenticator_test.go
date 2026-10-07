@@ -4,15 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	authenticationv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apiserver/pkg/authentication/authenticator"
-	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 )
@@ -71,150 +69,6 @@ func TestTokenReviewAuthenticator_Unauthenticated(t *testing.T) {
 	}
 }
 
-func TestProcessAuthentication_ManagedClusterToken(t *testing.T) {
-	s := &serviceProxy{
-		enableImpersonation: true,
-		managedClusterAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return &authenticator.Response{User: &user.DefaultInfo{Name: "mc-user"}}, true, nil
-		}),
-		hubAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			t.Fatal("hub authenticator should not be called for managed cluster token")
-			return nil, false, nil
-		}),
-	}
-
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Set("Authorization", "Bearer mc-token")
-	// Client-supplied impersonation must be stripped even when processHubUser is not called.
-	req.Header.Set(authenticationv1.ImpersonateUserHeader, "system:admin")
-	req.Header.Add(authenticationv1.ImpersonateGroupHeader, "system:masters")
-	req.Header.Set(authenticationv1.ImpersonateUIDHeader, "escalated-uid")
-	req.Header.Set(authenticationv1.ImpersonateUserExtraHeaderPrefix+"scopes.authorization.openshift.io", "user:full")
-
-	if err := s.processAuthentication(ctx, req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	assertNoImpersonationHeaders(t, req.Header)
-}
-
-func TestProcessAuthentication_HubServiceAccountToken(t *testing.T) {
-	s := &serviceProxy{
-		enableImpersonation: true,
-		managedClusterAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return nil, false, nil // not a managed cluster token
-		}),
-		hubAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return &authenticator.Response{
-				User: &user.DefaultInfo{
-					Name:   "system:serviceaccount:ns:my-sa",
-					Groups: []string{"system:serviceaccounts", "system:authenticated"},
-				},
-			}, true, nil
-		}),
-		getImpersonateTokenFunc: func() (string, error) {
-			return "fake-sa-token", nil
-		},
-	}
-
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Set("Authorization", "Bearer hub-token")
-
-	err := s.processAuthentication(ctx, req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify impersonation headers were set
-	if req.Header.Get("Impersonate-User") != "cluster:hub:system:serviceaccount:ns:my-sa" {
-		t.Fatalf("expected impersonate user with cluster:hub: prefix, got '%s'", req.Header.Get("Impersonate-User"))
-	}
-
-	// Verify the original token was replaced with the impersonation token
-	if req.Header.Get("Authorization") != "Bearer fake-sa-token" {
-		t.Fatalf("expected authorization header to use impersonation token, got '%s'", req.Header.Get("Authorization"))
-	}
-}
-
-func TestProcessAuthentication_UnauthenticatedToken(t *testing.T) {
-	s := &serviceProxy{
-		enableImpersonation: true,
-		managedClusterAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return nil, false, nil
-		}),
-		hubAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return nil, false, nil
-		}),
-	}
-
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Set("Authorization", "Bearer invalid-token")
-
-	err := s.processAuthentication(ctx, req)
-	if err == nil {
-		t.Fatal("expected authentication error")
-	}
-	if !strings.Contains(err.Error(), "neither valid for managed cluster nor hub cluster") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestProcessHubUser_RegularUser(t *testing.T) {
-	s := &serviceProxy{
-		getImpersonateTokenFunc: func() (string, error) {
-			return "fake-sa-token", nil
-		},
-	}
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-
-	hubUser := &user.DefaultInfo{
-		Name:   "admin@example.com",
-		Groups: []string{"system:authenticated", "admins"},
-	}
-
-	if err := s.processHubUser(ctx, req, hubUser); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Regular user should NOT get cluster:hub: prefix
-	if req.Header.Get("Impersonate-User") != "admin@example.com" {
-		t.Fatalf("expected impersonate user 'admin@example.com', got '%s'", req.Header.Get("Impersonate-User"))
-	}
-
-	groups := req.Header.Values("Impersonate-Group")
-	if len(groups) != 2 {
-		t.Fatalf("expected 2 impersonate groups, got %d: %v", len(groups), groups)
-	}
-}
-
-func TestProcessHubUser_ServiceAccount(t *testing.T) {
-	s := &serviceProxy{
-		getImpersonateTokenFunc: func() (string, error) {
-			return "fake-sa-token", nil
-		},
-	}
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-
-	hubUser := &user.DefaultInfo{
-		Name:   "system:serviceaccount:proxy-test:proxy-bench",
-		Groups: []string{"system:serviceaccounts", "system:authenticated"},
-	}
-
-	if err := s.processHubUser(ctx, req, hubUser); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	expected := "cluster:hub:system:serviceaccount:proxy-test:proxy-bench"
-	if req.Header.Get("Impersonate-User") != expected {
-		t.Fatalf("expected impersonate user '%s', got '%s'", expected, req.Header.Get("Impersonate-User"))
-	}
-}
-
 func TestConvertExtra(t *testing.T) {
 	extra := map[string]authenticationv1.ExtraValue{
 		"example.org/scope": {"read", "write"},
@@ -229,20 +83,6 @@ func TestConvertExtra(t *testing.T) {
 
 	if convertExtra(nil) != nil {
 		t.Fatal("expected nil for nil input")
-	}
-}
-
-func TestNewServiceProxy_DefaultValues(t *testing.T) {
-	s := newServiceProxy()
-
-	if s.tokenReviewCacheTTL != defaultTokenReviewCacheTTL {
-		t.Fatalf("expected default TTL %v, got %v", defaultTokenReviewCacheTTL, s.tokenReviewCacheTTL)
-	}
-	if s.kubeClientQPS != defaultKubeClientQPS {
-		t.Fatalf("expected default QPS %v, got %v", defaultKubeClientQPS, s.kubeClientQPS)
-	}
-	if s.kubeClientBurst != defaultKubeClientBurst {
-		t.Fatalf("expected default burst %v, got %v", defaultKubeClientBurst, s.kubeClientBurst)
 	}
 }
 
@@ -366,246 +206,16 @@ func TestTokenReviewAuthenticator_StatusError_UnknownError(t *testing.T) {
 	}
 }
 
-func TestProcessAuthentication_GetImpersonateTokenError(t *testing.T) {
-	s := &serviceProxy{
-		enableImpersonation: true,
-		managedClusterAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return nil, false, nil
-		}),
-		hubAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return &authenticator.Response{
-				User: &user.DefaultInfo{
-					Name:   "system:serviceaccount:ns:my-sa",
-					Groups: []string{"system:authenticated"},
-				},
-			}, true, nil
-		}),
-		getImpersonateTokenFunc: func() (string, error) {
-			return "", fmt.Errorf("token file not found")
-		},
+func TestNewTokenReviewAuthenticatorCache(t *testing.T) {
+	client := fake.NewSimpleClientset()
+
+	uncached := newTokenReviewAuthenticator(client, managedClusterAuthProviderMetadata.displayName, 0)
+	if _, ok := uncached.(*tokenReviewAuthenticator); !ok {
+		t.Fatalf("uncached authenticator type = %T, want *tokenReviewAuthenticator", uncached)
 	}
 
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Set("Authorization", "Bearer hub-token")
-
-	err := s.processAuthentication(ctx, req)
-	if err == nil {
-		t.Fatal("expected error from getImpersonateTokenFunc")
-	}
-	if !strings.Contains(err.Error(), "failed to get impersonate token") {
-		t.Fatalf("expected impersonate token error, got: %v", err)
-	}
-}
-
-func TestProcessAuthentication_ManagedClusterFatalError(t *testing.T) {
-	s := &serviceProxy{
-		enableImpersonation: true,
-		managedClusterAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return nil, false, fmt.Errorf("apiserver unreachable")
-		}),
-		hubAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			t.Fatal("hub authenticator should not be called for fatal managed cluster errors")
-			return nil, false, nil
-		}),
-	}
-
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Set("Authorization", "Bearer some-token")
-
-	err := s.processAuthentication(ctx, req)
-	if err == nil {
-		t.Fatal("expected fatal error when managed cluster auth has infrastructure failure")
-	}
-	if !strings.Contains(err.Error(), "apiserver unreachable") {
-		t.Fatalf("expected original error preserved, got: %v", err)
-	}
-}
-
-func TestProcessAuthentication_OpenShiftTokenReviewError_FallsBackToHub(t *testing.T) {
-	s := &serviceProxy{
-		enableImpersonation: true,
-		managedClusterAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return nil, false, fmt.Errorf(
-				"managed cluster TokenReview: invalid bearer token, token lookup failed: %w",
-				ErrTokenNotAuthenticated,
-			)
-		}),
-		hubAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return &authenticator.Response{
-				User: &user.DefaultInfo{
-					Name:   "kube:admin",
-					Groups: []string{"system:cluster-admins", "system:authenticated"},
-				},
-			}, true, nil
-		}),
-		getImpersonateTokenFunc: func() (string, error) {
-			return "fake-sa-token", nil
-		},
-	}
-
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Set("Authorization", "Bearer hub-only-token")
-
-	err := s.processAuthentication(ctx, req)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if req.Header.Get("Impersonate-User") != "kube:admin" {
-		t.Fatalf("expected impersonate user 'kube:admin', got '%s'", req.Header.Get("Impersonate-User"))
-	}
-	if req.Header.Get("Authorization") != "Bearer fake-sa-token" {
-		t.Fatalf("expected authorization header to use impersonation token, got '%s'", req.Header.Get("Authorization"))
-	}
-}
-
-func TestProcessAuthentication_HubAuthError(t *testing.T) {
-	s := &serviceProxy{
-		enableImpersonation: true,
-		managedClusterAuthenticator: authenticator.TokenFunc(
-			func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-				return nil, false, nil // not a managed cluster token
-			}),
-		hubAuthenticator: authenticator.TokenFunc(
-			func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-				return nil, false, fmt.Errorf("hub apiserver timeout")
-			}),
-	}
-
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Set("Authorization", "Bearer some-token")
-
-	err := s.processAuthentication(ctx, req)
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if !strings.Contains(err.Error(), "hub cluster auth error") {
-		t.Fatalf("expected hub cluster auth error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "hub apiserver timeout") {
-		t.Fatalf("expected original error message preserved, got: %v", err)
-	}
-}
-
-func TestProcessAuthentication_StripsClientImpersonationOnHubPath(t *testing.T) {
-	s := &serviceProxy{
-		enableImpersonation: true,
-		managedClusterAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return nil, false, nil
-		}),
-		hubAuthenticator: authenticator.TokenFunc(func(ctx context.Context, token string) (*authenticator.Response, bool, error) {
-			return &authenticator.Response{
-				User: &user.DefaultInfo{
-					Name:   "lowpriv",
-					Groups: []string{"system:authenticated"},
-				},
-			}, true, nil
-		}),
-		getImpersonateTokenFunc: func() (string, error) {
-			return "fake-sa-token", nil
-		},
-	}
-
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Set("Authorization", "Bearer hub-token")
-	req.Header.Set(authenticationv1.ImpersonateUserHeader, "system:admin")
-	req.Header.Add(authenticationv1.ImpersonateGroupHeader, "system:masters")
-	req.Header.Add(authenticationv1.ImpersonateGroupHeader, "cluster-admins")
-	req.Header.Set(authenticationv1.ImpersonateUIDHeader, "escalated-uid")
-	req.Header.Set(authenticationv1.ImpersonateUserExtraHeaderPrefix+"scopes.authorization.openshift.io", "user:full")
-
-	if err := s.processAuthentication(ctx, req); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if got := req.Header.Get(authenticationv1.ImpersonateUserHeader); got != "lowpriv" {
-		t.Fatalf("expected Impersonate-User from TokenReview 'lowpriv', got %q", got)
-	}
-
-	groups := req.Header.Values(authenticationv1.ImpersonateGroupHeader)
-	if len(groups) != 1 || groups[0] != "system:authenticated" {
-		t.Fatalf("expected only authenticated group, got %v", groups)
-	}
-	for _, g := range groups {
-		if g == "system:masters" || g == "cluster-admins" {
-			t.Fatalf("client-injected group %q must not be forwarded", g)
-		}
-	}
-
-	if got := req.Header.Get(authenticationv1.ImpersonateUIDHeader); got != "" {
-		t.Fatalf("expected Impersonate-Uid stripped, got %q", got)
-	}
-	if got := req.Header.Get(authenticationv1.ImpersonateUserExtraHeaderPrefix + "scopes.authorization.openshift.io"); got != "" {
-		t.Fatalf("expected Impersonate-Extra stripped, got %q", got)
-	}
-	if req.Header.Get("Authorization") != "Bearer fake-sa-token" {
-		t.Fatalf("expected authorization header to use impersonation token, got %q", req.Header.Get("Authorization"))
-	}
-}
-
-func TestProcessHubUser_IgnoresClientInjectedGroups(t *testing.T) {
-	s := &serviceProxy{
-		getImpersonateTokenFunc: func() (string, error) {
-			return "fake-sa-token", nil
-		},
-	}
-	ctx := t.Context()
-	req, _ := http.NewRequestWithContext(ctx, "GET", "https://example.com/api", nil)
-	req.Header.Add(authenticationv1.ImpersonateGroupHeader, "system:masters")
-
-	hubUser := &user.DefaultInfo{
-		Name:   "admin@example.com",
-		Groups: []string{"system:authenticated"},
-	}
-	if err := s.processHubUser(ctx, req, hubUser); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	groups := req.Header.Values(authenticationv1.ImpersonateGroupHeader)
-	if len(groups) != 1 || groups[0] != "system:authenticated" {
-		t.Fatalf("expected only authenticated group after processHubUser, got %v", groups)
-	}
-}
-
-func TestStripClientImpersonationHeaders(t *testing.T) {
-	h := http.Header{}
-	h.Set(authenticationv1.ImpersonateUserHeader, "u")
-	h.Add(authenticationv1.ImpersonateGroupHeader, "g1")
-	h.Add(authenticationv1.ImpersonateGroupHeader, "g2")
-	h.Set(authenticationv1.ImpersonateUIDHeader, "uid")
-	h.Set(authenticationv1.ImpersonateUserExtraHeaderPrefix+"foo", "bar")
-	h.Set("Authorization", "Bearer keep-me")
-	h.Set("X-Custom", "keep-me-too")
-
-	stripClientImpersonationHeaders(h)
-
-	assertNoImpersonationHeaders(t, h)
-	if h.Get("Authorization") != "Bearer keep-me" {
-		t.Fatalf("Authorization should be preserved, got %q", h.Get("Authorization"))
-	}
-	if h.Get("X-Custom") != "keep-me-too" {
-		t.Fatalf("unrelated headers should be preserved, got %q", h.Get("X-Custom"))
-	}
-}
-
-func assertNoImpersonationHeaders(t *testing.T, h http.Header) {
-	t.Helper()
-	if got := h.Get(authenticationv1.ImpersonateUserHeader); got != "" {
-		t.Fatalf("expected Impersonate-User empty, got %q", got)
-	}
-	if got := h.Values(authenticationv1.ImpersonateGroupHeader); len(got) != 0 {
-		t.Fatalf("expected Impersonate-Group empty, got %v", got)
-	}
-	if got := h.Get(authenticationv1.ImpersonateUIDHeader); got != "" {
-		t.Fatalf("expected Impersonate-Uid empty, got %q", got)
-	}
-	for key, values := range h {
-		if strings.HasPrefix(key, authenticationv1.ImpersonateUserExtraHeaderPrefix) {
-			t.Fatalf("expected Impersonate-Extra headers stripped, found %s=%v", key, values)
-		}
+	cached := newTokenReviewAuthenticator(client, managedClusterAuthProviderMetadata.displayName, time.Second)
+	if _, ok := cached.(*tokenReviewAuthenticator); ok {
+		t.Fatalf("cached authenticator was not wrapped: %T", cached)
 	}
 }

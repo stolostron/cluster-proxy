@@ -1,95 +1,160 @@
-## Requirements
+# Service proxy authentication and impersonation
 
-### 1 The Pre-req of using service-proxy impersonation feature
+## Overview
 
-Both hub and managed cluster need to be configured with the same external IDP.
+When `enableServiceProxy=true`, cluster-proxy deploys a user-server on the hub
+and a service-proxy sidecar on each managed cluster. The user-server sends
+requests through the cluster-proxy tunnel, and the service-proxy authenticates
+requests targeting the managed cluster Kubernetes API.
 
-### 2 The corner case of serviceaccount impersonation
+For Kubernetes API requests, service-proxy tries authentication in this order:
 
-If token is a hub serviceaccount token, the impersonate user will be `cluster:hub:system:serviceaccount:<namespace>:<serviceaccount-name>`.
+1. Managed cluster TokenReview
+2. Hub cluster TokenReview, when enabled
+3. External OIDC ID token verification, when configured
 
-This username should also be the `User` that used in ClusterPermission rolebinding.
+Hub-token authentication and OIDC can be enabled independently.
 
-For `local-cluster`, the service-proxy will also determine the token as a managed cluster user. So when binding serviceaccount via ClusterPermission on local-cluster, no need to add `cluster:hub:` prefix.
+The forwarding behavior is:
 
-### 3 The flow of how service-proxy handles requests
+| Authentication path | Forwarded identity |
+| --- | --- |
+| Client-supplied `Impersonate-*` headers | The original bearer token and impersonation headers are forwarded unchanged. |
+| Managed cluster TokenReview | The original bearer token is forwarded unchanged. |
+| Hub cluster TokenReview | The request uses the service-proxy service account token and impersonates the hub username and groups. |
+| External OIDC | The request uses the service-proxy service account token and impersonates the mapped OIDC username and groups. |
+
+The hub and managed cluster do **not** need to use the same identity provider.
+A hub token only needs to be valid on the hub. The resulting username and
+groups need corresponding RBAC on the managed cluster.
+
+Authentication and impersonation are only applied when the target is
+`kubernetes.default.svc`. Requests to other proxied Services are forwarded
+without this Kubernetes API authentication flow.
+
+### ServiceAccount identities
+
+For a remote managed cluster, a hub ServiceAccount is impersonated as:
+
+```text
+cluster:hub:system:serviceaccount:<namespace>:<serviceaccount-name>
+```
+
+Use that full username in managed cluster RBAC. On `local-cluster`, the
+ServiceAccount token normally succeeds in the managed cluster TokenReview
+first, so the `cluster:hub:` prefix is not added.
+
+### Request flow
 
 ```mermaid
 flowchart TD
-    A[Receive Request] --> B[Log Request if Debug Enabled]
-    B --> C[Get Target Service URL]
-    C -->|Error| D[Return 400 Bad Request]
-    C -->|Success| E{Is kubernetes.default.svc?}
-
-    E -->|Yes| G{Is Managed Cluster User?}
-    E -->|No| J[Setup Reverse Proxy]
-
-    G -->|Yes| J
-    G -->|No| H{Is Hub User?}
-
-    H -->|No| I[Return 401 Unauthorized]
-    H -->|Yes| K1[Set Impersonate Groups]
-
-    K1 --> K2{Is ServiceAccount?}
-    K2 -->|Yes| K3[Add cluster:hub: prefix]
-    K2 -->|No| K4[Use username directly]
-    K3 --> K5[Replace with Proxy SA Token]
-    K4 --> K5
-    K5 --> J
-
-    J --> L[Configure Transport]
-    L --> M[Forward Request to Target]
-
-    style E fill:#f9f,stroke:#333,stroke-width:2px
-    style G fill:#bbf,stroke:#333,stroke-width:2px
-    style H fill:#bbf,stroke:#333,stroke-width:2px
-    style K2 fill:#bbf,stroke:#333,stroke-width:2px
+    A[Receive request] --> B[Resolve target Service]
+    B -->|Invalid target| C[Return 400 Bad Request]
+    B --> D{Target is kubernetes.default.svc?}
+    D -->|No| P[Forward request]
+    D -->|Yes| E{Client Impersonate-* present?}
+    E -->|Yes| Q[Skip proxy authentication<br/>and identity rewriting]
+    Q --> P
+    Q -.-> R[If Impersonate-* is present, the managed API server<br/>authenticates the token and authorizes impersonation]
+    E -->|No| F{Hub or OIDC enabled?}
+    F -->|No| P
+    F -->|Yes| G{Managed TokenReview succeeds?}
+    G -->|Yes| P
+    G -->|No| H{Hub enabled and TokenReview succeeds?}
+    H -->|Yes| I[Set hub user and group impersonation]
+    H -->|No| J{OIDC configured and token valid?}
+    J -->|No| U[Return 401 Unauthorized]
+    J -->|Yes| L[Map OIDC claims to user and groups]
+    I --> M[Replace bearer token with proxy ServiceAccount token]
+    L --> M
+    M --> P
 ```
 
-### 4 How to test service-proxy impersonation feature
+## Enable service-proxy
 
-Because the current e2e infrastructure doesn't support set up 2 clusters, we need to test this feature manually.
-
-#### 4.1 Configure the LDAP test server to both clusters and create a serviceaccount on the hub cluster
-
-First, make sure you have a hub cluster and at least one managed cluster:
+Service-proxy is disabled by default. For a Helm installation, enable the hub
+user-server, the managed cluster service-proxy sidecar, and hub-token
+authentication:
 
 ```bash
-➜  test git:(master) ✗ oc get managedcluster
-NAME            HUB ACCEPTED   MANAGED CLUSTER URLS                                                           JOINED   AVAILABLE   AGE
-cluster1        true           https://api.server-foundation-sno-lite-qrpbl.dev04.red-chesterfield.com:6443   True     True        6m39s
-local-cluster   true           https://api.server-foundation-sno-lite-7xhwt.dev04.red-chesterfield.com:6443   True     True        7d16h
+helm upgrade --install cluster-proxy ./charts/cluster-proxy \
+  --namespace open-cluster-management-addon \
+  --create-namespace \
+  --set enableServiceProxy=true \
+  --set enableImpersonation=true \
+  --set userServer.enabled=true
 ```
 
-We are going configure the same [LDAP test server](https://www.forumsys.com/2022/05/10/online-ldap-test-server/) for both hub and managed cluster.
+`userServer.enabled=true` asks the controller to generate and rotate the
+user-server serving certificate. If you provide that certificate yourself,
+leave this value false and follow the
+[user-server certificate instructions](../../charts/cluster-proxy/README.md#user-server-serving-certificate).
+
+The top-level `enableImpersonation` Helm value grants the required hub
+permissions. The per-cluster `enableImpersonation` variable enables hub token
+authentication in service-proxy and defaults to true.
+
+The command above is enough for Kubernetes API requests. Other Services are
+denied by default. Add each destination to the Helm values when it should be
+reachable through the service proxy path:
+
+```yaml
+exposedServices:
+  - namespace: monitoring
+    service: prometheus
+    port: "9090"
+    protocol: https
+```
+
+See the [Helm chart guide](../../charts/cluster-proxy/README.md#service-proxy-and-user-server-configuration)
+for wildcard fields and manually managed ConfigMaps.
+
+## OpenShift LDAP hub-token verification
+
+This procedure verifies user, group, and ServiceAccount impersonation across a
+hub and a remote managed cluster. LDAP is only an example hub authentication
+provider; service-proxy itself is not LDAP-specific.
+
+The public LDAP server used below is suitable for testing only. Do not use its
+shared credentials or insecure LDAP connection in production.
+The `curl` examples also skip user-server certificate verification for this
+lab procedure. In production, expose the user-server with a trusted
+certificate or pass its CA bundle with `--cacert`.
+
+### 1. Set the cluster and namespace variables
+
+Use an administrator context for each cluster:
 
 ```bash
-cat << 'EOF' | oc apply -f -
-apiVersion: config.openshift.io/v1
-kind: OAuth
-metadata:
-  name: cluster
-spec:
-  identityProviders:
-  - name: ldap-provider
-    mappingMethod: claim
-    type: LDAP
-    ldap:
-      attributes:
-        id:
-        - dn
-        email:
-        - mail
-        name:
-        - cn
-        preferredUsername:
-        - uid
-      bindDN: "cn=read-only-admin,dc=example,dc=com"
-      bindPassword:
-        name: ldap-secret
-      insecure: true # Just for test
-      url: "ldap://ldap.forumsys.com:389/dc=example,dc=com?uid?sub?(objectClass=inetOrgPerson)"
----
+export HUB_CONTEXT="hub-admin-context"
+export MANAGED_CONTEXT="managed-cluster-admin-context"
+export MANAGED_CLUSTER=cluster1
+export HUB_ADDON_NAMESPACE=open-cluster-management-addon
+export SPOKE_ADDON_NAMESPACE=open-cluster-management-cluster-proxy
+```
+
+Replace the example context names with contexts from your kubeconfig.
+`HUB_ADDON_NAMESPACE` is the namespace containing the user-server endpoint.
+For the Helm installation in this guide it is the release namespace;
+MultiClusterEngine-based installations use `multicluster-engine`.
+`SPOKE_ADDON_NAMESPACE` must match the managed cluster addon installation
+namespace.
+
+Confirm the addon is available:
+
+```bash
+oc --context "$HUB_CONTEXT" \
+  get managedclusteraddon cluster-proxy \
+  --namespace "$MANAGED_CLUSTER"
+```
+
+### 2. Configure the LDAP provider on the hub
+
+Create the bind password, group-sync configuration, and OpenShift OAuth
+identity provider on the hub only:
+
+```bash
+oc --context "$HUB_CONTEXT" apply -f - <<'EOF'
 apiVersion: v1
 kind: Secret
 metadata:
@@ -119,63 +184,112 @@ data:
         derefAliases: never
         filter: "(objectclass=groupOfUniqueNames)"
       groupUIDAttribute: cn
-      groupNameAttributes: [ cn ]
-      groupMembershipAttributes: [ uniqueMember ]
+      groupNameAttributes: [cn]
+      groupMembershipAttributes: [uniqueMember]
       usersQuery:
         baseDN: "dc=example,dc=com"
         scope: sub
         derefAliases: never
       userUIDAttribute: dn
-      userNameAttributes: [ uid ]
+      userNameAttributes: [uid]
+---
+apiVersion: config.openshift.io/v1
+kind: OAuth
+metadata:
+  name: cluster
+spec:
+  identityProviders:
+  - name: ldap-provider
+    mappingMethod: claim
+    type: LDAP
+    ldap:
+      attributes:
+        id: [dn]
+        email: [mail]
+        name: [cn]
+        preferredUsername: [uid]
+      bindDN: "cn=read-only-admin,dc=example,dc=com"
+      bindPassword:
+        name: ldap-secret
+      insecure: true
+      url: "ldap://ldap.forumsys.com:389/dc=example,dc=com?uid?sub?(objectClass=inetOrgPerson)"
 EOF
 ```
 
-Sync the LDAP groups to the hub cluster:
+Wait for the hub OAuth server to accept the new configuration:
 
 ```bash
-oc get configmap ldap-group-sync -n openshift-config -o jsonpath='{.data.sync\.yaml}' > /tmp/ldap-sync.yaml
-oc adm groups sync --sync-config=/tmp/ldap-sync.yaml --confirm
-rm /tmp/ldap-sync.yaml
+oc --context "$HUB_CONTEXT" \
+  rollout status deployment/oauth-openshift \
+  --namespace openshift-authentication \
+  --timeout=5m
 ```
 
-After this step, you can see the groups in the hub cluster:
+The managed cluster does not need this LDAP provider for hub-token
+impersonation. Configure an identity provider there only if you also want to
+test the managed cluster TokenReview path with a managed-cluster-issued token.
+
+### 3. Sync the LDAP groups and create a hub ServiceAccount
 
 ```bash
-➜  test git:(master) ✗ oc get groups
-NAME             USERS
-Chemists         curie, boyle, nobel, pasteur
-Italians         tesla
-Mathematicians   euclid, riemann, euler, gauss, test
-Scientists       einstein, tesla, newton, galileo
+LDAP_SYNC_FILE=$(mktemp)
+oc --context "$HUB_CONTEXT" \
+  get configmap ldap-group-sync \
+  --namespace openshift-config \
+  --output jsonpath='{.data.sync\.yaml}' >"$LDAP_SYNC_FILE"
+oc --context "$HUB_CONTEXT" adm groups sync \
+  --sync-config="$LDAP_SYNC_FILE" \
+  --confirm
+rm -f "$LDAP_SYNC_FILE"
+
+oc --context "$HUB_CONTEXT" \
+  create namespace cluster-proxy-auth-test \
+  --dry-run=client \
+  --output yaml \
+  | oc --context "$HUB_CONTEXT" apply -f -
+
+oc --context "$HUB_CONTEXT" \
+  create serviceaccount test-sa \
+  --namespace cluster-proxy-auth-test \
+  --dry-run=client \
+  --output yaml \
+  | oc --context "$HUB_CONTEXT" apply -f -
 ```
 
-Then, create a serviceaccount on the hub cluster:
+Verify that the `Scientists` group contains `einstein`:
 
 ```bash
-oc create namespace test
-oc create serviceaccount test-sa -n test
+oc --context "$HUB_CONTEXT" get group Scientists
 ```
 
-#### 4.2 Create Rolebinding with hub user, group and serviceaccount via ClusterPermission
+Expected output:
 
-On the hub cluster, create the ClusterPermission resources:
+```
+NAME         USERS
+Scientists   einstein, tesla, newton, galileo
+```
+
+### 4. Distribute managed cluster RBAC with ClusterPermission
+
+This example assumes the OCM ClusterPermission API is installed on the hub.
+Create permissions for the LDAP user, LDAP group, and hub ServiceAccount:
 
 ```bash
-cat << 'EOF' | oc apply -f -
+oc --context "$HUB_CONTEXT" apply -f - <<EOF
 apiVersion: rbac.open-cluster-management.io/v1alpha1
 kind: ClusterPermission
 metadata:
-  name: test-pods
-  namespace: cluster1
+  name: cluster-proxy-test-pods
+  namespace: ${MANAGED_CLUSTER}
 spec:
   roles:
-  - namespace: open-cluster-management-agent-addon
+  - namespace: ${SPOKE_ADDON_NAMESPACE}
     rules:
     - apiGroups: [""]
       resources: ["pods"]
-      verbs: ["get","list"]
+      verbs: ["get", "list"]
   roleBindings:
-  - namespace: open-cluster-management-agent-addon
+  - namespace: ${SPOKE_ADDON_NAMESPACE}
     roleRef:
       kind: Role
     subject:
@@ -186,17 +300,17 @@ spec:
 apiVersion: rbac.open-cluster-management.io/v1alpha1
 kind: ClusterPermission
 metadata:
-  name: test-deployments
-  namespace: cluster1
+  name: cluster-proxy-test-deployments
+  namespace: ${MANAGED_CLUSTER}
 spec:
   roles:
-  - namespace: open-cluster-management-agent-addon
+  - namespace: ${SPOKE_ADDON_NAMESPACE}
     rules:
     - apiGroups: ["apps"]
       resources: ["deployments"]
-      verbs: ["get","list"]
+      verbs: ["get", "list"]
   roleBindings:
-  - namespace: open-cluster-management-agent-addon
+  - namespace: ${SPOKE_ADDON_NAMESPACE}
     roleRef:
       kind: Role
     subject:
@@ -207,84 +321,370 @@ spec:
 apiVersion: rbac.open-cluster-management.io/v1alpha1
 kind: ClusterPermission
 metadata:
-  name: test-services
-  namespace: cluster1
+  name: cluster-proxy-test-services
+  namespace: ${MANAGED_CLUSTER}
 spec:
   roles:
-  - namespace: open-cluster-management-agent-addon
+  - namespace: ${SPOKE_ADDON_NAMESPACE}
     rules:
     - apiGroups: [""]
       resources: ["services"]
-      verbs: ["get","list"]
+      verbs: ["get", "list"]
   roleBindings:
-  - namespace: open-cluster-management-agent-addon
+  - namespace: ${SPOKE_ADDON_NAMESPACE}
     roleRef:
       kind: Role
     subject:
       apiGroup: rbac.authorization.k8s.io
       kind: User
-      name: cluster:hub:system:serviceaccount:test:test-sa
+      name: cluster:hub:system:serviceaccount:cluster-proxy-auth-test:test-sa
 EOF
 ```
 
-On the managed cluster, check the result by running the following command:
+Wait for the RoleBindings to appear on the managed cluster:
 
 ```bash
-➜  test git:(master) ✗ oc get role -n open-cluster-management-agent-addon | grep test
-test-deployments                                             2025-04-09T09:09:42Z
-test-pods                                                    2025-04-09T09:09:42Z
-test-services                                                2025-04-09T09:09:43Z
+oc --context "$MANAGED_CONTEXT" \
+  get role,rolebinding \
+  --namespace "$SPOKE_ADDON_NAMESPACE" \
+  | grep cluster-proxy-test
 ```
+
+### 5. Verify LDAP user and group impersonation
+
+Obtain a hub token without replacing the administrator context in the main
+kubeconfig:
 
 ```bash
-➜  test git:(master) ✗ oc get rolebinding -n open-cluster-management-agent-addon | grep test
-test-deployments                                             Role/test-deployments                                             3m26s
-test-pods                                                    Role/test-pods                                                    44s
-test-services                                                Role/test-services                                                43s
+HUB_API=$(oc --context "$HUB_CONTEXT" whoami --show-server)
+LDAP_KUBECONFIG=$(mktemp)
+oc login "$HUB_API" \
+  --kubeconfig "$LDAP_KUBECONFIG" \
+  --username einstein \
+  --password password \
+  --insecure-skip-tls-verify=true
+LDAP_TOKEN=$(oc --kubeconfig "$LDAP_KUBECONFIG" whoami --show-token)
+rm -f "$LDAP_KUBECONFIG"
 ```
 
-#### 4.3 Test the impersonation of User and Group
-
-On the hub cluster, get token of user "einstein":
+For an OpenShift installation that exposes the user-server through a Route:
 
 ```bash
-oc login -u einstein -p password --insecure-skip-tls-verify=true
-TOKEN=$(oc whoami -t)
+CLUSTER_PROXY_HOST=$(oc --context "$HUB_CONTEXT" \
+  get route cluster-proxy-addon-user \
+  --namespace "$HUB_ADDON_NAMESPACE" \
+  --output jsonpath='{.spec.host}')
+export CLUSTER_PROXY_URL="https://${CLUSTER_PROXY_HOST}"
+
+curl --fail --insecure \
+  --header "Authorization: Bearer ${LDAP_TOKEN}" \
+  "${CLUSTER_PROXY_URL}/${MANAGED_CLUSTER}/api/v1/namespaces/${SPOKE_ADDON_NAMESPACE}/pods"
+
+curl --fail --insecure \
+  --header "Authorization: Bearer ${LDAP_TOKEN}" \
+  "${CLUSTER_PROXY_URL}/${MANAGED_CLUSTER}/apis/apps/v1/namespaces/${SPOKE_ADDON_NAMESPACE}/deployments"
 ```
 
-Then, list pods of cluster1 via cluster-proxy-addon endpoint:
+Both requests should succeed: the first through the user binding and the
+second through the `Scientists` group binding. The Helm chart in this
+repository does not create a Route; MultiClusterEngine-based installations do.
+Without one, expose the `cluster-proxy-addon-user` Service with the ingress
+mechanism used by your platform and use that URL.
+
+### 6. Verify hub ServiceAccount impersonation
 
 ```bash
-oc config use-context admin
-CLUSTER_PROXY_URL=$(oc get route cluster-proxy-addon-user -n multicluster-engine -o jsonpath='{.spec.host}')
-curl -k -H "Authorization: Bearer $TOKEN" https://$CLUSTER_PROXY_URL/cluster1/api/v1/namespaces/open-cluster-management-agent-addon/pods
-curl -k -H "Authorization: Bearer $TOKEN" https://$CLUSTER_PROXY_URL/cluster1/apis/apps/v1/namespaces/open-cluster-management-agent-addon/deployments
+SA_TOKEN=$(oc --context "$HUB_CONTEXT" \
+  create token test-sa \
+  --namespace cluster-proxy-auth-test)
+
+curl --fail --insecure \
+  --header "Authorization: Bearer ${SA_TOKEN}" \
+  "${CLUSTER_PROXY_URL}/${MANAGED_CLUSTER}/api/v1/namespaces/${SPOKE_ADDON_NAMESPACE}/services"
 ```
 
-Both `curl` commands should return the result successfully.
+The request should succeed using the
+`cluster:hub:system:serviceaccount:cluster-proxy-auth-test:test-sa` binding.
 
-#### 4.4 Test the impersonation of ServiceAccount
+## OIDC token authentication
 
-On the hub cluster, get token of serviceaccount "test-sa":
+Service-proxy can validate an external OIDC ID token without configuring OIDC
+on either kube-apiserver and without deploying another authentication proxy.
+OIDC is checked after the managed cluster TokenReview and the optional hub
+TokenReview:
+
+```text
+managed cluster TokenReview -> [hub TokenReview] -> OIDC verification -> impersonation
+```
+
+The commands in this section use the following variables. If you did not run
+the LDAP procedure above, set them before continuing:
 
 ```bash
-# For Kubernetes 1.24 and higher:
-SA_TOKEN=$(oc create token test-sa -n test)
-
-# For Kubernetes 1.23 and lower:
-# 1. Get the secret associated with the serviceaccount
-SECRET_NAME=$(oc get serviceaccount test-sa -n test -o jsonpath='{.secrets[0].name}')
-
-# 2. Extract the token from the secret
-SA_TOKEN=$(oc get secret $SECRET_NAME -n test -o jsonpath='{.data.token}' | base64 -d)
-
-# Choose the appropriate method based on your Kubernetes version
+export HUB_CONTEXT="hub-admin-context"
+export MANAGED_CONTEXT="managed-cluster-admin-context"
+export MANAGED_CLUSTER=cluster1
+export SPOKE_ADDON_NAMESPACE=open-cluster-management-cluster-proxy
+export CLUSTER_PROXY_URL="https://user-server.example.com"
 ```
 
-Then, list services of cluster1 via cluster-proxy-addon endpoint:
+`CLUSTER_PROXY_URL` is the externally reachable user-server base URL. Include
+the scheme and any non-default port, but no trailing slash. Replace the example
+contexts and URL with values for your environment.
+
+### OIDC settings
+
+The addon-agent chart exposes the service-proxy OIDC flags as customized
+variables:
+
+| AddOnDeploymentConfig variable | Service-proxy flag | Effective default | Description |
+| --- | --- | --- | --- |
+| `oidcIssuerURL` | `--oidc-issuer-url` | Empty; OIDC disabled | HTTPS issuer URL. Must be set with `oidcClientID`. |
+| `oidcClientID` | `--oidc-client-id` | Empty | Required token audience. Must be set with `oidcIssuerURL`. |
+| `oidcUsernameClaim` | `--oidc-username-claim` | `sub` | Claim mapped to the Kubernetes username. |
+| `oidcUsernamePrefix` | `--oidc-username-prefix` | Issuer URL plus `#` for non-email claims | Explicit username prefix. Set `-` to disable prefixing. |
+| `oidcGroupsClaim` | `--oidc-groups-claim` | Empty; no IdP groups | Claim containing a string or array of group names. |
+| `oidcGroupsPrefix` | `--oidc-groups-prefix` | Empty | Prefix applied to every mapped group. |
+| `oidcReservedNamePrefixes` | `--oidc-reserved-name-prefixes` | `system:` | Comma-separated prefixes forbidden for mapped usernames and groups. |
+| `oidcCAConfigMap` | `--oidc-ca-configmap` | Empty; host root CAs | Watched ConfigMap containing the private issuer CA under `ca.crt`. |
+| `oidcSigningAlgs` | `--oidc-signing-algs` | `RS256` | Comma-separated allowed JOSE asymmetric signing algorithms. |
+| `oidcRequiredClaimsJSON` | repeated `--oidc-required-claim` | Empty | JSON object whose string key/value pairs must appear in the token. |
+
+The service-proxy command exposes the same behavior through its `--oidc-*`
+flags. Private issuer CAs are configured with `--oidc-ca-configmap`; omit it
+to use the host root CAs. Run `cluster-proxy service-proxy --help` to inspect
+the CLI defaults.
+
+Important security behavior:
+
+- The default `system:` reserved prefix prevents an IdP claim from mapping to
+  identities such as `system:masters`. A customized list replaces the default,
+  so include `system:` when adding prefixes.
+- An empty `oidcReservedNamePrefixes` value deliberately disables the reserved
+  name check. An empty element inside a non-empty list is rejected.
+- `system:authenticated` is appended by service-proxy only after reserved-name
+  validation.
+- For `oidcUsernameClaim=email`, a present `email_verified` claim must be
+  `true`.
+- Configure `oidcGroupsPrefix` when external group names could collide with
+  existing managed cluster RBAC subjects.
+
+### Configure OIDC for one managed cluster
+
+The following hub-side resources configure OIDC only for the selected managed
+cluster.
+
+First, if the issuer uses a private CA, create its ConfigMap on the **managed
+cluster**:
 
 ```bash
-curl -k -H "Authorization: Bearer $SA_TOKEN" https://$CLUSTER_PROXY_URL/cluster1/api/v1/namespaces/open-cluster-management-agent-addon/services
+kubectl --context "$MANAGED_CONTEXT" \
+  create configmap cluster-proxy-oidc-ca \
+  --namespace "$SPOKE_ADDON_NAMESPACE" \
+  --from-file=ca.crt=/path/to/issuer-ca.crt \
+  --dry-run=client \
+  --output yaml \
+  | kubectl --context "$MANAGED_CONTEXT" apply -f -
 ```
 
-The command should return the result successfully.
+Omit `oidcCAConfigMap` entirely for an issuer trusted by the container's
+standard root CAs.
+
+Create the AddOnDeploymentConfig on the **hub**, in the managed cluster
+namespace:
+
+```bash
+kubectl --context "$HUB_CONTEXT" apply -f - <<EOF
+apiVersion: addon.open-cluster-management.io/v1beta1
+kind: AddOnDeploymentConfig
+metadata:
+  name: oidc-deploy-config
+  namespace: ${MANAGED_CLUSTER}
+spec:
+  customizedVariables:
+  - name: oidcIssuerURL
+    value: https://dex.example.com:5556/dex
+  - name: oidcClientID
+    value: cluster-proxy
+  - name: oidcUsernameClaim
+    value: email
+  - name: oidcUsernamePrefix
+    value: "oidc:"
+  - name: oidcGroupsClaim
+    value: groups
+  - name: oidcGroupsPrefix
+    value: "oidc:"
+  - name: oidcReservedNamePrefixes
+    value: "system:,dev:"
+  - name: oidcSigningAlgs
+    value: RS256
+  - name: oidcRequiredClaimsJSON
+    value: '{"hd":"example.com","tenant":"tenant-id"}'
+  - name: oidcCAConfigMap
+    value: cluster-proxy-oidc-ca
+EOF
+```
+
+`customizedVariables` are strings. Use comma-separated strings for the two
+list-valued settings, `oidcReservedNamePrefixes` and `oidcSigningAlgs`.
+`oidcRequiredClaimsJSON` must be a JSON object whose values are strings.
+
+Add the deployment config to the existing
+`ManagedClusterAddOn.spec.configs` list. Preserve any entries already present:
+
+```bash
+kubectl --context "$HUB_CONTEXT" \
+  edit managedclusteraddon cluster-proxy \
+  --namespace "$MANAGED_CLUSTER"
+```
+
+Add:
+
+```yaml
+spec:
+  configs:
+  - group: addon.open-cluster-management.io
+    resource: addondeploymentconfigs
+    namespace: cluster1
+    name: oidc-deploy-config
+```
+
+The `namespace` field is the managed cluster name, `cluster1` in this guide.
+
+`status.configReferences` is controller-owned status and must not be edited.
+Only clusters whose ManagedClusterAddOn references this configuration receive
+the OIDC fallback.
+
+Verify that the reference was accepted and the service-proxy rollout contains
+the OIDC flags:
+
+```bash
+kubectl --context "$HUB_CONTEXT" \
+  get managedclusteraddon cluster-proxy \
+  --namespace "$MANAGED_CLUSTER" \
+  --output yaml
+
+kubectl --context "$MANAGED_CONTEXT" \
+  get deployment cluster-proxy-proxy-agent \
+  --namespace "$SPOKE_ADDON_NAMESPACE" \
+  --output jsonpath='{.spec.template.spec.containers[?(@.name=="service-proxy")].args}' \
+  | tr ' ' '\n' \
+  | grep oidc
+```
+
+### Grant and verify OIDC RBAC
+
+Bind managed cluster RBAC to the final, prefixed username:
+
+```bash
+kubectl --context "$MANAGED_CONTEXT" apply -f - <<EOF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oidc-pod-reader
+  namespace: ${SPOKE_ADDON_NAMESPACE}
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: oidc-pod-reader
+  namespace: ${SPOKE_ADDON_NAMESPACE}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: oidc-pod-reader
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: User
+  name: oidc:admin@example.com
+EOF
+```
+
+Obtain an ID token from the configured provider, then send it to the
+user-server:
+
+```bash
+export OIDC_TOKEN="replace-with-oidc-id-token"
+
+curl --fail --insecure \
+  --header "Authorization: Bearer ${OIDC_TOKEN}" \
+  "${CLUSTER_PROXY_URL}/${MANAGED_CLUSTER}/api/v1/namespaces/${SPOKE_ADDON_NAMESPACE}/pods"
+```
+
+The `--insecure` option is appropriate only for a lab endpoint. Omit it for a
+publicly trusted certificate, or replace it with
+`--cacert /path/to/user-server-ca.crt`.
+
+### OIDC CA lifecycle
+
+When `oidcCAConfigMap` is set, service-proxy watches that ConfigMap in its
+namespace and applies changes without a Pod restart. A missing or invalid
+`ca.crt` disables OIDC authentication until corrected. If the issuer is
+unavailable, discovery retries in the background without affecting
+service-proxy or TokenReview authentication.
+
+### Automated coverage
+
+Run the Dex-backed end-to-end test with:
+
+```bash
+make test-e2e LABEL_FILTER=oidc
+```
+
+The test obtains a real Dex ID token and verifies the complete path:
+
+```text
+user-server -> tunnel -> service-proxy -> OIDC verification
+  -> impersonation -> managed kube-apiserver
+```
+
+It also verifies the impersonated identity, denial before RBAC is granted, and
+successful authorization after the matching RoleBinding is created.
+
+## Graceful shutdown
+
+The user-server and service-proxy drain HTTP requests on SIGTERM and TLS
+configuration reloads:
+
+1. The readiness endpoint starts returning an error so Services and load
+   balancers can remove the Pod from rotation.
+2. The public listener remains available for at least 10 seconds by default,
+   allowing endpoint updates to propagate.
+3. The listener stops accepting new connections, idle HTTP connections close,
+   and the server waits for active requests managed by `net/http` until they
+   finish or the 30-second drain deadline expires.
+4. The process exits, disconnecting any requests or upgraded connections still
+   open.
+
+Connections hijacked from `net/http`, including WebSocket and SPDY exec,
+attach, and port-forward sessions, are not included in the drain. Waiting for
+them could allow some sessions to close naturally, but cluster-proxy cannot
+send a common shutdown notification or transfer them to another Pod. The
+implementation therefore favors the standard `http.Server.Shutdown` lifecycle
+over custom TCP connection tracking. The minimum drain duration is included in
+the overall timeout rather than added to it.
+
+On a TLS configuration change, the affected container completes this shutdown
+flow and exits. The kubelet then restarts that container in the existing Pod so
+it loads the new configuration.
+
+The `user-server` and `service-proxy` subcommands accept `--drain-timeout` and
+`--min-drain-duration`. Both values must be non-negative, and the minimum
+duration must not exceed the overall timeout. Set both to `0` for immediate
+shutdown. The controller subcommand uses controller-runtime's graceful
+shutdown default.
+
+Service-proxy flags can be overridden by adding the following fragment to the
+existing `ManagedProxyConfiguration`:
+
+```yaml
+spec:
+  proxyAgent:
+    additionalServiceProxyArgs:
+    - --drain-timeout=20s
+    - --min-drain-duration=5s
+```
