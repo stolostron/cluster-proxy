@@ -3,8 +3,8 @@ module open-cluster-management.io/cluster-proxy
 go 1.26.2
 
 require (
-	github.com/onsi/ginkgo/v2 v2.33.0
-	github.com/onsi/gomega v1.43.1
+	github.com/onsi/ginkgo/v2 v2.33.1
+	github.com/onsi/gomega v1.44.0
 	github.com/openshift/library-go v0.0.0-20250711143941-47604345e7ea
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.12.1
@@ -29,7 +29,7 @@ require (
 	k8s.io/component-base v0.37.1
 	k8s.io/streaming v0.37.1
 	sigs.k8s.io/apiserver-network-proxy v0.37.0
-	sigs.k8s.io/cluster-inventory-api v0.1.3
+	sigs.k8s.io/cluster-inventory-api v0.2.0
 	sigs.k8s.io/yaml v1.6.0
 )
 
