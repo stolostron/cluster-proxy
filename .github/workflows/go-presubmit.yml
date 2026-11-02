@@ -64,7 +64,7 @@ jobs:
       - name: setup helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.20.1
+          version: v4.3.1
       - name: test helm charts
         run: make test-helm
 
@@ -84,7 +84,7 @@ jobs:
       - name: unit
         run: make test
       - name: report coverage
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_UPLOAD_TOKEN }}
           files: ./cover.out
@@ -125,14 +125,14 @@ jobs:
       - name: setup helm
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.20.1
+          version: v4.3.1
       - name: Install clusteradm
         run: |
           make -C hack/tools clusteradm
           echo "$PWD/hack/tools/bin" >> "$GITHUB_PATH"
           hack/tools/bin/clusteradm version
       - name: Create k8s Kind Cluster
-        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           cluster_name: e2e
       - name: Build image
