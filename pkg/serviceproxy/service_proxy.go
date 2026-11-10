@@ -298,12 +298,17 @@ func (s *serviceProxy) ServeHTTP(wr http.ResponseWriter, req *http.Request) {
 	)
 
 	if url.Host == "kubernetes.default.svc" {
-		if s.enableImpersonation {
+		clientImpersonationRequested := hasClientImpersonationHeaders(req.Header)
+		if shouldProcessAuthentication(s.enableImpersonation, clientImpersonationRequested) {
 			if err := s.processAuthentication(ctx, req); err != nil {
 				logger.Error(err, "authentication failed")
 				http.Error(wr, err.Error(), http.StatusUnauthorized)
 				return
 			}
+		} else if clientImpersonationRequested {
+			// Let the managed cluster API server authenticate the original token and
+			// authorize client impersonation through its own RBAC.
+			logger.V(4).Info("skipping proxy-side authentication for client impersonation")
 		}
 	}
 
@@ -351,6 +356,23 @@ func (s *serviceProxy) readImpersonateTokenFromFile() (string, error) {
 		return "", err
 	}
 	return string(token), nil
+}
+
+// hasClientImpersonationHeaders reports whether a request contains a Kubernetes
+// impersonation header. Match the prefix case-insensitively so future impersonation
+// headers are also passed through to the managed cluster API server.
+func hasClientImpersonationHeaders(headers http.Header) bool {
+	const prefix = "Impersonate-"
+	for key := range headers {
+		if len(key) >= len(prefix) && strings.EqualFold(key[:len(prefix)], prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldProcessAuthentication(enableImpersonation, clientImpersonationRequested bool) bool {
+	return enableImpersonation && !clientImpersonationRequested
 }
 
 // stripClientImpersonationHeaders removes any client-supplied impersonation headers.
