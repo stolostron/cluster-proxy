@@ -3,33 +3,30 @@ module open-cluster-management.io/cluster-proxy
 go 1.26.2
 
 require (
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/onsi/ginkgo/v2 v2.33.1
 	github.com/onsi/gomega v1.44.0
 	github.com/openshift/library-go v0.0.0-20250711143941-47604345e7ea
 	github.com/pkg/errors v0.9.1
+	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
 	google.golang.org/grpc v1.84.0
 	k8s.io/api v0.37.1
 	k8s.io/apimachinery v0.37.1
+	k8s.io/apiserver v0.37.1
 	k8s.io/client-go v0.37.1
+	k8s.io/component-base v0.37.1
 	k8s.io/klog/v2 v2.140.0
+	k8s.io/streaming v0.37.1
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd
 	open-cluster-management.io/addon-framework v1.4.0
 	open-cluster-management.io/api v1.4.0
 	open-cluster-management.io/sdk-go v1.4.0
-	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.37.0
-	sigs.k8s.io/controller-runtime v0.25.2
-)
-
-require (
-	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/spf13/cobra v1.10.2
-	github.com/spf13/pflag v1.0.10
-	k8s.io/apiserver v0.37.1
-	k8s.io/component-base v0.37.1
-	k8s.io/streaming v0.37.1
 	sigs.k8s.io/apiserver-network-proxy v0.37.0
+	sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.37.0
 	sigs.k8s.io/cluster-inventory-api v0.2.0
+	sigs.k8s.io/controller-runtime v0.25.2
 	sigs.k8s.io/yaml v1.6.0
 )
 
