@@ -17,6 +17,54 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
+func TestHasClientImpersonationHeaders(t *testing.T) {
+	tests := []struct {
+		name     string
+		header   string
+		expected bool
+	}{
+		{name: "no impersonation header", header: "Authorization", expected: false},
+		{name: "user", header: "Impersonate-User", expected: true},
+		{name: "lowercase group", header: "impersonate-group", expected: true},
+		{name: "mixed-case UID", header: "ImPeRsOnAtE-Uid", expected: true},
+		{name: "extra", header: "Impersonate-Extra-example.org%2Fscope", expected: true},
+		{name: "future header", header: "Impersonate-Future", expected: true},
+		{name: "similar header", header: "X-Impersonate-User", expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			headers := make(http.Header)
+			headers.Set(tt.header, "value")
+			if got := hasClientImpersonationHeaders(headers); got != tt.expected {
+				t.Fatalf("hasClientImpersonationHeaders() = %t, want %t", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestShouldProcessAuthentication(t *testing.T) {
+	tests := []struct {
+		name                         string
+		enableImpersonation          bool
+		clientImpersonationRequested bool
+		want                         bool
+	}{
+		{name: "enabled without client impersonation", enableImpersonation: true, want: true},
+		{name: "enabled with client impersonation", enableImpersonation: true, clientImpersonationRequested: true, want: false},
+		{name: "disabled without client impersonation", want: false},
+		{name: "disabled with client impersonation", clientImpersonationRequested: true, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldProcessAuthentication(tt.enableImpersonation, tt.clientImpersonationRequested); got != tt.want {
+				t.Fatalf("shouldProcessAuthentication() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 // newFakeClient creates a fake kubernetes client that responds to TokenReview
 // requests with the given authenticated status and user info.
 func newFakeClient(authenticated bool, username string, groups []string) *fake.Clientset {
