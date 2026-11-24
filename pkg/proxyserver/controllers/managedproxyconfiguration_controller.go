@@ -2,7 +2,9 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"strconv"
@@ -14,6 +16,7 @@ import (
 	"open-cluster-management.io/cluster-proxy/pkg/common"
 	"open-cluster-management.io/cluster-proxy/pkg/constant"
 	"open-cluster-management.io/cluster-proxy/pkg/proxyserver/operator/authentication/selfsigned"
+	"open-cluster-management.io/cluster-proxy/pkg/util"
 	"open-cluster-management.io/sdk-go/pkg/certrotation"
 	sdktls "open-cluster-management.io/sdk-go/pkg/tls"
 
@@ -185,11 +188,20 @@ func (c *ManagedProxyConfigurationReconciler) refreshStatus(isModified bool, con
 }
 
 func (c *ManagedProxyConfigurationReconciler) deployProxyServer(config *proxyv1alpha1.ManagedProxyConfiguration) (bool, error) {
+	caData := c.SelfSigner.CAData()
+	certHash, err := c.proxyServerCertificateHash(config, caData)
+	if err != nil {
+		return false, err
+	}
+	deployment := newProxyServerDeployment(config, c.imagePullPolicy, c.tlsConfig)
+	// The proxy-server loads its certificates at startup, so Secret updates must change the Pod template.
+	deployment.Spec.Template.Annotations = map[string]string{common.AnnotationKeyServingCertHash: certHash}
+
 	resources := []client.Object{
 		newServiceAccount(config),
 		newProxyService(config),
-		newProxySecret(config, c.SelfSigner.CAData()),
-		newProxyServerDeployment(config, c.imagePullPolicy, c.tlsConfig),
+		newProxySecret(config, caData),
+		deployment,
 		newProxyServerRole(config),
 		newProxyServerRoleBinding(config),
 	}
@@ -229,6 +241,35 @@ func (c *ManagedProxyConfigurationReconciler) deployProxyServer(config *proxyv1a
 			Eventf("ProxyServerUpdated", "Resources are updated: %v", updatedKinds)
 	}
 	return anyCreated || anyUpdated, nil
+}
+
+func (c *ManagedProxyConfigurationReconciler) proxyServerCertificateHash(config *proxyv1alpha1.ManagedProxyConfiguration, caData []byte) (string, error) {
+	if len(caData) == 0 {
+		return "", errors.New("proxy-server CA certificate is empty")
+	}
+	certificateData := [][]byte{caData}
+	namespace := config.Spec.ProxyServer.Namespace
+	for _, name := range []string{
+		config.Spec.Authentication.Dump.Secrets.SigningProxyServerSecretName,
+		config.Spec.Authentication.Dump.Secrets.SigningAgentServerSecretName,
+	} {
+		// Rotation writes through this client; the informer may still contain the previous certificate.
+		secret, err := c.SecretGetter.Secrets(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+		if err != nil {
+			return "", errors.Wrapf(err, "failed to get serving certificate secret %q/%q", namespace, name)
+		}
+		for _, key := range []string{corev1.TLSCertKey, corev1.TLSPrivateKeyKey} {
+			if len(secret.Data[key]) == 0 {
+				return "", fmt.Errorf("serving certificate secret %q/%q has no %s", namespace, name, key)
+			}
+			certificateData = append(certificateData, secret.Data[key])
+		}
+	}
+	data, err := json.Marshal(certificateData)
+	if err != nil {
+		return "", errors.Wrap(err, "failed to encode proxy-server certificates")
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
 }
 
 func (c *ManagedProxyConfigurationReconciler) ensure(incomingGeneration int64, gvk schema.GroupVersionKind, resource client.Object) (bool, bool, error) {
@@ -450,10 +491,11 @@ func (c *ManagedProxyConfigurationReconciler) ensureEntrypoint(config *proxyv1al
 		if err != nil {
 			return "", errors.Wrapf(err, "failed to get service %q/%q", namespace, name)
 		}
-		if len(lbSvc.Status.LoadBalancer.Ingress) == 0 {
-			return "", errors.New("external ip not yet provisioned")
+		address := util.LoadBalancerIngressAddress(lbSvc)
+		if len(address) == 0 {
+			return "", errors.New("external address not yet provisioned")
 		}
-		return lbSvc.Status.LoadBalancer.Ingress[0].IP, nil
+		return address, nil
 	}
 	return "", nil
 }
